@@ -1,69 +1,189 @@
-# Prerequisites
-*.d
+# ============================================================
+# N-Gin - Visual Studio / C++ / DirectX 11
+# ============================================================
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
+# ------------------------------------------------------------
+# Visual Studio user-specific files
+# ------------------------------------------------------------
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# ------------------------------------------------------------
+# Visual Studio build output
+# ------------------------------------------------------------
+Debug/
+Release/
+x64/
+x86/
+
+[Bb]in/
+[Oo]bj/
+
+# In case configuration folders exist inside project folders
+**/Debug/
+**/Release/
+**/x64/Debug/
+**/x64/Release/
+**/x86/Debug/
+**/x86/Release/
+
+# ------------------------------------------------------------
+# C / C++ compiled files
+# ------------------------------------------------------------
 *.obj
+*.o
+*.lo
+*.slo
 
-# Precompiled Headers
-*.gch
+# Precompiled headers
 *.pch
+*.gch
 
-# Linker files
+# ------------------------------------------------------------
+# Linker / compiler output
+# ------------------------------------------------------------
 *.ilk
+*.exp
+*.iobj
+*.ipdb
 
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
+# Libraries
 *.lib
+*.a
+*.la
+*.lai
+
+# Dynamic libraries
+*.dll
+*.so
+*.so.*
+*.dylib
 
 # Executables
 *.exe
 *.out
 *.app
 
-# Build directories
+# ------------------------------------------------------------
+# Debug symbols / diagnostics
+# ------------------------------------------------------------
+*.pdb
+*.idb
+*.dwo
+
+# Crash dumps
+*.dmp
+*.mdmp
+
+# ------------------------------------------------------------
+# Incremental / intermediate Visual Studio files
+# ------------------------------------------------------------
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+*.tmp
+
+# Generated compiler files
+*.ipch
+*.aps
+
+# Browse / IntelliSense databases
+*.sdf
+*.opensdf
+*.ncb
+
+# ------------------------------------------------------------
+# CMake
+# Keep this even if you currently use .vcxproj files.
+# It prevents junk if someone experiments with CMake later.
+# ------------------------------------------------------------
 build/
 Build/
 build-*/
 
-# CMake generated files
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
 install_manifest.txt
 compile_commands.json
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
-
+# ------------------------------------------------------------
 # vcpkg
+# ------------------------------------------------------------
 vcpkg_installed/
 
-# debug information files
-*.dwo
+# Keep manifests if you add them later:
+# vcpkg.json
+# vcpkg-configuration.json
 
-# test output & cache
+# ------------------------------------------------------------
+# Testing / profiling / cache
+# ------------------------------------------------------------
 Testing/
 .cache/
+
+# Visual Studio profiling
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# ------------------------------------------------------------
+# Temporary / backup files
+# ------------------------------------------------------------
+*.bak
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+~$*
+
+# ------------------------------------------------------------
+# OS-generated files
+# ------------------------------------------------------------
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ------------------------------------------------------------
+# Optional editor folders
+# ------------------------------------------------------------
+.idea/
+
+# Uncomment only if you do NOT want shared VS Code settings:
+# .vscode/
+
+# ------------------------------------------------------------
+# IMPORTANT:
+# Do NOT ignore these project/source files:
+#
+# *.sln
+# *.vcxproj
+# *.vcxproj.filters
+# *.cpp
+# *.c
+# *.h
+# *.hpp
+# *.shader
+# *.hlsl
+# *.rc
+# *.ico
+#
+# They are part of the project and should be committed.
+# ------------------------------------------------------------
