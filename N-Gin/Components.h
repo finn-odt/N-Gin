@@ -3,6 +3,7 @@
 #include "Usings.h"
 
 #include <DirectXMath.h>
+#include "Camera.h"
 
 // Components (as raw data containers)
 
@@ -21,12 +22,6 @@ struct Physics
     DirectX::XMFLOAT3 angularVelocity{ 0.0f, 0.0f, 0.0f };
     bool useGravity = true;
 };
-
-using MeshHandle = uint32_t;
-using MaterialHandle = uint32_t;
-
-constexpr MeshHandle INVALID_MESH = 0;
-constexpr MaterialHandle INVALID_MATERIAL = 0;
 
 struct MeshRenderer
 {

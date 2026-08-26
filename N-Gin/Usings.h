@@ -148,6 +148,13 @@ struct TypeHash
     }
 };
 
+// Meshes
+using MeshHandle = uint32_t;
+using MaterialHandle = uint32_t;
+
+constexpr MeshHandle INVALID_MESH = 0;
+constexpr MaterialHandle INVALID_MATERIAL = 0;
+
 // CONSTANTS
 constexpr ArchetypeId EMPTY_ARCHETYPE_ID = 0;
 

@@ -30,18 +30,27 @@
 
 using namespace DirectX;
 
+#include <CommCtrl.h>
 
-#include "Camera.h"
+#pragma comment(lib, "Comctl32.lib")
 
 #pragma comment (lib, "d3d11.lib")
 #pragma comment (lib, "D3DX11.lib")
 #pragma comment (lib, "D3DX10.lib")
 
-#define SCREEN_WIDTH 800
-#define SCREEN_HEIGHT 600
-#define BASE_COLOR D3DXCOLOR(0.0f, 0.0f, 0.0f, 1.0f)
-#define SHAPE_SCALE 0.1
-#define PI 3.14159265358979323846f
+#define BASE_COLOR D3DXCOLOR(0.0f, 0.0f, 0.0f, 1.0f)  // BACKGROUND COLOR
+
+#define WINDOW_WIDTH 1200
+#define WINDOW_HEIGHT 750
+
+#define SCREEN_WIDTH 920
+#define SCREEN_HEIGHT 750
+
+UINT renderWidth = 0;
+UINT renderHeight = 0;
+
+constexpr float MIN_NEAR_PLANE = 0.01f;
+constexpr float MIN_PLANE_GAP = 0.01f;
 
 struct Position;
 struct Rotation;
@@ -52,8 +61,6 @@ struct Matrix3x3;
 EntityManager entityManager;
 std::unique_ptr<MeshManager> meshManager;
 
-float cubeRotation = 0.0f;
-
 // direct x pipeline (Interface Direct-X Global Interface Swap Chain)
 IDXGISwapChain* swapchain;
 ID3D11Device* dev;
@@ -61,11 +68,23 @@ ID3D11DeviceContext* devcon;
 ID3D11RenderTargetView* backBuffer;
 HWND hWnd;  // handler for window
 
+HWND viewportWnd = nullptr;
+
+HWND editPosX = nullptr;
+HWND editPosY = nullptr;
+HWND editPosZ = nullptr;
+HWND editRotX = nullptr;
+HWND editRotY = nullptr;
+HWND editRotZ = nullptr;
+HWND editFov = nullptr;
+HWND editFar = nullptr;
+HWND editNear = nullptr;
+
+constexpr int INSPECTOR_WIDTH = 280;
+
 // 3D Stuff
 ID3D11Texture2D* depthStencilBuffer = nullptr;
 ID3D11DepthStencilView* depthStencilView = nullptr;
-// Camera
-Camera camera;
 // MVP matrices for geometry stage (Local -> World -> View -> Clip -> Screen)
 XMMATRIX world;
 XMMATRIX view;
@@ -84,21 +103,35 @@ ID3D11PixelShader* pixelShader;
 ID3D11VertexShader* vertexShader;
 ID3D11Buffer* matrixBuffer = nullptr;
 
+// FORWARD METHOD DECLARATIONS
+
 bool InitD3D(HWND Hwnd);
 void Render(void);
 void FixedUpdate(float fixedDeltaTime);
 void CleanD3D(void);
 bool InitGraphics(void);
 bool InitPipeline(void);  // setup shaders, const. buffers, ...
-
+void UpdateCameraInspector();
 XMMATRIX GetWorldMatrix(const Transform& transform);
 XMMATRIX GetProjectionMatrix(const Camera& camera, float aspectRatio);
 
-void UpdateTriangles(void);
-float DegreesToRadians(float degrees);
-Matrix3x3 GetRotationMatrix(float eulerX, float eulerY, float eulerZ);
-Triangle GetRandomTriangle(float xPosition, float yPosition, Position vel);
-std::vector<Vertex> TrianglesToLinearVertices();
+// MOUSE INPUT (e.g. DRAG & DROP)
+HWND hoveredEdit = nullptr;
+HWND draggedEdit = nullptr;
+
+bool editMouseDown = false;
+bool editDragging = false;
+
+int dragStartMouseX = 0;
+int previousMouseX = 0;
+
+constexpr int DRAG_THRESHOLD = 4;
+
+bool updatingInspector = false;
+
+// CAMERA
+EntityId MainCamera;
+bool MainCameraInitialized = false;
 
 #define MAX_LOADSTRING 100
 
@@ -111,6 +144,8 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // Der Klassenname des Hauptfens
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
+
+LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 
 // APIENTRY 
@@ -204,6 +239,11 @@ bool InitD3D(HWND Hwnd)
 {
     HRESULT hr;
 
+    RECT rect{};
+    GetClientRect(Hwnd, &rect);
+    renderWidth = static_cast<UINT>(rect.right - rect.left);
+    renderHeight = static_cast<UINT>(rect.bottom - rect.top);
+
     // description:
     DXGI_SWAP_CHAIN_DESC scd;
     ZeroMemory(&scd, sizeof(DXGI_SWAP_CHAIN_DESC));  // clear memory location
@@ -216,8 +256,8 @@ bool InitD3D(HWND Hwnd)
     // Multi-Sample-Anti-Aliasing (MSAA) is default in DirectX
     scd.Windowed = TRUE;
     //scd.BufferDesc.RefreshRate  -> limit frame rate with[denominator = 60 -> 60Hz]
-    scd.BufferDesc.Width = SCREEN_WIDTH;
-    scd.BufferDesc.Height = SCREEN_HEIGHT;
+    scd.BufferDesc.Width = renderWidth;
+    scd.BufferDesc.Height = renderHeight;
     scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
     hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, NULL, NULL, NULL, D3D11_SDK_VERSION, &scd, &swapchain, &dev, NULL, &devcon);
@@ -239,8 +279,8 @@ bool InitD3D(HWND Hwnd)
 
     // DEPTH BUFFER
     D3D11_TEXTURE2D_DESC depthDesc{};
-    depthDesc.Width = SCREEN_WIDTH;
-    depthDesc.Height = SCREEN_HEIGHT;
+    depthDesc.Width = renderWidth;
+    depthDesc.Height = renderHeight;
     depthDesc.MipLevels = 1;
     depthDesc.ArraySize = 1;
     depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
@@ -277,8 +317,8 @@ bool InitD3D(HWND Hwnd)
 
     viewport.TopLeftX = 0;
     viewport.TopLeftY = 0;
-    viewport.Width = SCREEN_WIDTH;
-    viewport.Height = SCREEN_HEIGHT;
+    viewport.Width = static_cast<float>(renderWidth);
+    viewport.Height = static_cast<float>(renderHeight);
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
 
@@ -299,22 +339,41 @@ void Render(void)
     devcon->ClearRenderTargetView(backBuffer, BASE_COLOR);
     devcon->ClearDepthStencilView(depthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
-    // Camera matrices
-    XMVECTOR eye = XMLoadFloat3(&camera.position);  // camera position as eye
-    XMVECTOR target = XMLoadFloat3(&camera.target);  // target position of the eye
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    if (!MainCameraInitialized)
+    {
+        std::cout << "There is no camera in the scene!";
+        return;
+    }
 
-    XMMATRIX view = XMMatrixLookAtLH(  // View-Matrix
-        eye,
+    // Get Camera Components
+    Transform* cameraTransform = entityManager.GetComponent<Transform>(MainCamera);
+    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+
+    // Camera matrices
+    XMVECTOR position = XMLoadFloat3(&cameraTransform->position);
+    XMVECTOR rotation = XMLoadFloat4(&cameraTransform->rotation);
+
+    XMVECTOR forward = XMVector3Rotate(
+        XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f),
+        rotation
+    );
+
+    XMVECTOR up = XMVector3Rotate(
+        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f),
+        rotation
+    );
+
+    XMVECTOR target = XMVectorAdd(position, forward);
+
+    XMMATRIX view = XMMatrixLookAtLH(  // View Matrix
+        position,
         target,
         up
     );
 
-    float aspect =
-        static_cast<float>(SCREEN_WIDTH) /
-        static_cast<float>(SCREEN_HEIGHT);
+    float aspect = static_cast<float>(renderWidth) / static_cast<float>(renderHeight);
 
-    projection = GetProjectionMatrix(camera, aspect);
+    projection = GetProjectionMatrix(*camera, aspect);
 
     // Pipeline state shared by all mesh objects
     devcon->IASetPrimitiveTopology(
@@ -328,9 +387,7 @@ void Render(void)
     );
 
     entityManager.ForEach<Transform, MeshRenderer>(
-        [&](EntityId entity,
-            Transform& transform,
-            MeshRenderer& renderer)
+        [&](EntityId entity, Transform& transform,MeshRenderer& renderer)
         {
             if (!renderer.visible)
                 return;
@@ -338,14 +395,11 @@ void Render(void)
             if (renderer.mesh == INVALID_MESH)
                 return;
 
-
             // 1. Get GPU mesh from MeshHandle
             const Mesh& mesh = meshManager->GetMesh(renderer.mesh);
 
-
             // 2. World matrix comes from THIS entity's transform
             XMMATRIX world = GetWorldMatrix(transform);
-
 
             // 3. Upload this entity's W/V/P
             D3D11_MAPPED_SUBRESOURCE mappedResource{};
@@ -361,24 +415,15 @@ void Render(void)
             if (FAILED(hr))
                 return;
 
-            MatrixBufferData* matrixData = static_cast<MatrixBufferData*>(
-							                    mappedResource.pData
-							                );
+            MatrixBufferData* matrixData = static_cast<MatrixBufferData*>(mappedResource.pData);
 
-            matrixData->world =
-                XMMatrixTranspose(world);
+            matrixData->world = XMMatrixTranspose(world);
 
-            matrixData->view =
-                XMMatrixTranspose(view);
+            matrixData->view = XMMatrixTranspose(view);
 
-            matrixData->projection =
-                XMMatrixTranspose(projection);
+            matrixData->projection = XMMatrixTranspose(projection);
 
-            devcon->Unmap(
-                matrixBuffer,
-                0
-            );
-
+            devcon->Unmap(matrixBuffer, 0);
 
             // 4. Bind THIS entity's mesh
 
@@ -415,8 +460,6 @@ void FixedUpdate(float fixedDeltaTime) {
     // Physics goes here
     // Example:
     // position += velocity * fixedDeltaTime;
-
-    cubeRotation += fixedDeltaTime * 5.0f;
 }
 
 bool InitPipeline()  // CREATE SHADERS
@@ -571,36 +614,69 @@ bool InitPipeline()  // CREATE SHADERS
     return true;
 }
 
+void SpawnObject(MeshHandle handle, const Transform& transform)
+{
+    EntityId entity = entityManager.AddEntity();
+
+    entityManager.AddComponent(entity, transform);
+
+    entityManager.AddComponent(
+        entity,
+        MeshRenderer{
+            handle,
+            INVALID_MATERIAL,
+            true
+        }
+    );
+}
+
+void AddCamera(void)
+{
+    EntityId cameraEntity = entityManager.AddEntity();
+
+    Transform cameraTransform;
+    cameraTransform.position = { 0.0f, 0.0f, -15.0f };
+
+    entityManager.AddComponent(cameraEntity, cameraTransform);
+
+    entityManager.AddComponent(cameraEntity, Camera{});
+
+    if (!MainCameraInitialized)
+    {
+        MainCamera = cameraEntity;
+        MainCameraInitialized = true;
+    }
+}
+
 bool InitGraphics()
 {
+    AddCamera();  // add main camera
+
     try
     {
+
         MeshHandle mesh = meshManager->LoadMesh("Assets/testmodel.fbx");
 
-        EntityId entity = entityManager.AddEntity();
+        int n = 20;
+        for (int i = 0; i < n; i++)
+        {
+            for (int k = 0; k < n; k++)
+            {
+                Transform transform;
+                transform.position = {5.0f*i - n/2.0f, 0.0f, 5.0f*k - n/2.0f };
+                XMStoreFloat4(
+                    &transform.rotation,
+                    XMQuaternionRotationRollPitchYaw(
+                        -XM_PIDIV2,       // X (pitch)
+                        XM_PI,  // Y (yaw) [PI/2 = 90°]
+                        0.0f        // Z (roll)
+                    )
+                );
+                transform.scale = { 1.0f, 1.0f, 1.0f };
 
-        Transform transform;
-        transform.position = { 0.0f, 0.0f, 0.0f };
-        XMStoreFloat4(
-            &transform.rotation,
-            XMQuaternionRotationRollPitchYaw(
-                -XM_PIDIV2,       // X (pitch)
-                XM_PI,  // Y (yaw) [PI/2 = 90°]
-                0.0f        // Z (roll)
-            )
-        );
-        transform.scale = { 1.0f, 1.0f, 1.0f };
-
-        entityManager.AddComponent(entity, transform);
-
-        entityManager.AddComponent(
-            entity,
-            MeshRenderer{
-                mesh,
-                INVALID_MATERIAL,
-                true
+                SpawnObject(mesh, transform);
             }
-        );
+        }
 
         return true;
     }
@@ -673,6 +749,9 @@ void CleanD3D(void)
         backBuffer = nullptr;
     }
 
+    // release all loaded meshes
+    meshManager.reset();
+
     // 3. Release the device context
     if (devcon)
     {
@@ -721,6 +800,17 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
+#define IDC_POSITION_X 1001
+#define IDC_POSITION_Y 1002
+#define IDC_POSITION_Z 1003
+#define IDC_ROTATION_X 1004
+#define IDC_ROTATION_Y 1005
+#define IDC_ROTATION_Z 1006
+
+#define IDC_FOV        1010
+#define IDC_NEAR_PLANE 1011
+#define IDC_FAR_PLANE  1012
+
 //
 //   FUNKTION: InitInstance(HINSTANCE, int)
 //
@@ -733,27 +823,289 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 //
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
-   hInst = hInstance; // Instanzenhandle in der globalen Variablen speichern
+    hInst = hInstance;
 
-    // create the handler for the window
-   hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      300, 300, SCREEN_WIDTH, SCREEN_HEIGHT, nullptr, nullptr, hInstance, nullptr);
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-   if (!hWnd)
-   {
-      return FALSE;
-   }
+    int x = (screenWidth - WINDOW_WIDTH) / 2;
+    int y = (screenHeight - WINDOW_HEIGHT) / 2;
 
-    if (!InitD3D(hWnd))
+    // main window for the whole process/program
+    hWnd = CreateWindowW(
+        szWindowClass,
+        szTitle,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        x,
+        y,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        nullptr,
+        nullptr,
+        hInstance,
+        nullptr
+    );
+
+    if (!hWnd)
+        return FALSE;
+
+    RECT clientRect{};
+    GetClientRect(hWnd, &clientRect);
+
+    int width = clientRect.right;
+    int height = clientRect.bottom;
+
+    int viewportWidth = width - INSPECTOR_WIDTH;
+
+    HFONT inspectorFont = CreateFontW(
+        15,                 // height in pixels
+        0, 0, 0,
+        FW_NORMAL,          // or FW_BOLD
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH,
+        L"Segoe UI"
+    );
+
+    // LEFT: DirectX viewport
+    viewportWnd = CreateWindowExW(
+        0,
+        L"STATIC",
+        nullptr,
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        0,
+        0,
+        viewportWidth,
+        height,
+        hWnd,
+        nullptr,
+        hInstance,
+        nullptr
+    );
+
+    // RIGHT: Inspector
+    int inspectorX = viewportWidth + 15;
+
+    CreateWindowW(L"STATIC", L"CAMERA", WS_CHILD | WS_VISIBLE, inspectorX, 15, 200, 25, hWnd, nullptr, hInstance, nullptr);
+
+    CreateWindowW(L"STATIC", L"Transform", WS_CHILD | WS_VISIBLE, inspectorX + 10, 55, 200, 20, hWnd, nullptr, hInstance, nullptr);
+
+    // X POSITION
+    HWND positionXLabel = 
+        CreateWindowW(L"STATIC", L"Position X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 90, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editPosX = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 87, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_X), hInstance, nullptr);
+
+    // Y POSITION
+    HWND positionYLabel = 
+        CreateWindowW(L"STATIC", L"Position Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 115, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editPosY = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 112, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Y), hInstance, nullptr);
+    
+    // Z POSITION
+    HWND positionZLabel = 
+        CreateWindowW(L"STATIC", L"Position Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 140, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editPosZ = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 137, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Z), hInstance, nullptr);
+
+
+    // X ROTATION
+    HWND rotationXLabel =
+        CreateWindowW(L"STATIC", L"Rotation X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 170, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editRotX =
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 167, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_X), hInstance, nullptr);
+
+    // Y ROTATION
+    HWND rotationYLabel =
+        CreateWindowW(L"STATIC", L"Rotation Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 195, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editRotY =
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 192, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_Y), hInstance, nullptr);
+
+    // Z ROTATION
+    HWND rotationZLabel =
+        CreateWindowW(L"STATIC", L"Rotation Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 220, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editRotZ =
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 217, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_Z), hInstance, nullptr);
+
+
+    CreateWindowW(L"STATIC", L"Camera", WS_CHILD | WS_VISIBLE, inspectorX + 10, 250, 200, 20, hWnd, nullptr, hInstance, nullptr);
+
+    // FOV
+    HWND camFovLabel = 
+        CreateWindowW(L"STATIC", L"FOV", WS_CHILD | WS_VISIBLE, inspectorX + 20, 275, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camFovLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editFov = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 272, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FOV), hInstance, nullptr);
+
+    // Near Plane
+    HWND camNearLabel = 
+        CreateWindowW(L"STATIC", L"Near Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 300, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camNearLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editNear = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 297, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_NEAR_PLANE), hInstance, nullptr);
+
+    // Far Plane
+    HWND camFarLabel = 
+        CreateWindowW(L"STATIC", L"Far Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 325, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camFarLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+
+    editFar = 
+        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 322, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FAR_PLANE), hInstance, nullptr);
+	
+    SetWindowSubclass(editPosX, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editPosY, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editPosZ, EditSubclassProc, 0, 0);
+
+    SetWindowSubclass(editRotX, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editRotY, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editRotZ, EditSubclassProc, 0, 0);
+
+    SetWindowSubclass(editFov, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editNear, EditSubclassProc, 0, 0);
+    SetWindowSubclass(editFar, EditSubclassProc, 0, 0);
+
+    if (!InitD3D(viewportWnd))
     {
-        MessageBoxA(hWnd, "DirectX initialization failed.", "Error", MB_OK | MB_ICONERROR);
+        MessageBoxA(
+            hWnd,
+            "DirectX initialization failed.",
+            "Error",
+            MB_OK | MB_ICONERROR
+        );
+
         return FALSE;
     }
+	
+	// MainCamera exists now
+    UpdateCameraInspector();
 
-   ShowWindow(hWnd, nCmdShow);  // pop up the window
-   UpdateWindow(hWnd);  // update the window
+    ShowWindow(hWnd, nCmdShow);
+    UpdateWindow(hWnd);
 
-   return TRUE;
+    return TRUE;
+}
+
+XMFLOAT3 QuaternionToEulerDegrees(const XMFLOAT4& rotation)
+{
+    XMVECTOR qVector = XMQuaternionNormalize(
+        XMLoadFloat4(&rotation)
+    );
+
+    XMFLOAT4 q;
+    XMStoreFloat4(&q, qVector);
+
+    // X = pitch
+    float sinPitch = 2.0f * (q.w * q.x - q.y * q.z);
+    sinPitch = std::clamp(sinPitch, -1.0f, 1.0f);
+
+    float pitch = std::asin(sinPitch);
+
+    // Y = yaw
+    float yaw = std::atan2(
+        2.0f * (q.w * q.y + q.x * q.z),
+        1.0f - 2.0f * (q.x * q.x + q.y * q.y)
+    );
+
+    // Z = roll
+    float roll = std::atan2(
+        2.0f * (q.w * q.z + q.x * q.y),
+        1.0f - 2.0f * (q.x * q.x + q.z * q.z)
+    );
+
+    return {
+        XMConvertToDegrees(pitch),
+        XMConvertToDegrees(yaw),
+        XMConvertToDegrees(roll)
+    };
+}
+
+XMVECTOR EulerDegreesToQuaternion(const XMFLOAT3& eulerRotation)
+{
+    XMVECTOR quaternion =
+        XMQuaternionRotationRollPitchYaw(
+            XMConvertToRadians(eulerRotation.x), // pitch, X
+            XMConvertToRadians(eulerRotation.y), // yaw,   Y
+            XMConvertToRadians(eulerRotation.z)  // roll,  Z
+        );
+
+    return quaternion;
+}
+
+void UpdateCameraInspector()
+{
+    if (!MainCameraInitialized)
+        return;
+
+    Transform* transform = entityManager.GetComponent<Transform>(MainCamera);
+
+    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+
+    if (!transform || !camera)
+        return;
+
+    updatingInspector = true;
+
+    wchar_t buffer[64];
+
+    // Position X
+    swprintf_s(buffer, L"%.2f", transform->position.x);
+    SetWindowTextW(editPosX, buffer);
+
+    // Position Y
+    swprintf_s(buffer, L"%.2f", transform->position.y);
+    SetWindowTextW(editPosY, buffer);
+
+    // Position Z
+    swprintf_s(buffer, L"%.2f", transform->position.z);
+    SetWindowTextW(editPosZ, buffer);
+
+
+    // Quaternion -> Euler degrees
+    XMFLOAT3 rotation = QuaternionToEulerDegrees(transform->rotation);
+
+    // Rotation X
+    swprintf_s(buffer, L"%.2f", rotation.x);
+    SetWindowTextW(editRotX, buffer);
+
+    // Rotation Y
+    swprintf_s(buffer, L"%.2f", rotation.y);
+    SetWindowTextW(editRotY, buffer);
+
+    // Rotation Z
+    swprintf_s(buffer, L"%.2f", rotation.z);
+    SetWindowTextW(editRotZ, buffer);
+
+
+    // FOV: radians -> degrees for inspector
+    swprintf_s(buffer,L"%.2f", XMConvertToDegrees(camera->fov));
+    SetWindowTextW(editFov, buffer);
+
+    // Near plane
+    swprintf_s(buffer, L"%.2f", camera->nearPlane);
+    SetWindowTextW(editNear, buffer);
+
+    // Far plane
+    swprintf_s(buffer, L"%.2f", camera->farPlane);
+    SetWindowTextW(editFar, buffer);
+
+    updatingInspector = false;
 }
 
 //
@@ -770,38 +1122,377 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
-	    case WM_COMMAND:  // windows message command
+	    case WM_COMMAND:
+	    {
+	        int controlId = LOWORD(wParam);
+	        int notification = HIWORD(wParam); 
+
+	        // --------------------------------------------------------
+	        // MENU COMMANDS
+	        // --------------------------------------------------------
+
+	        switch (controlId)
 	        {
-	            int wmId = LOWORD(wParam);  // id of message
-	            // Menüauswahl analysieren:
-	            switch (wmId)
+		        case IDM_ABOUT:
+		            DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+		            return 0;
+
+		        case IDM_EXIT:
+		            DestroyWindow(hWnd);
+		            return 0;
+	        }
+
+	        // --------------------------------------------------------
+	        // INSPECTOR INPUT
+	        // --------------------------------------------------------
+
+            if (notification == EN_CHANGE && MainCameraInitialized && !updatingInspector)
+	        {
+	            HWND control = reinterpret_cast<HWND>(lParam);
+
+	            Transform* transform =
+	                entityManager.GetComponent<Transform>(MainCamera);
+
+	            Camera* camera =
+	                entityManager.GetComponent<Camera>(MainCamera);
+
+	            if (!transform || !camera)
+	                return 0;
+
+	            wchar_t text[64]{};
+	            GetWindowTextW(control, text, 64);
+
+	            wchar_t* end = nullptr;
+	            float value = std::wcstof(text, &end);
+
+	            // Nothing valid could be parsed
+	            if (end == text)
+	                return 0;
+
+	            // ----------------------------------------------------
+	            // TRANSFORM
+	            // ----------------------------------------------------
+
+	            if (control == editPosX)
 	            {
-		            case IDM_ABOUT:
-		                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-		                break;
-		            case IDM_EXIT:
-		                DestroyWindow(hWnd);
-		                break;
-		            default:
-		                return DefWindowProc(hWnd, message, wParam, lParam);
+	                transform->position.x = value;
+	            }
+	            else if (control == editPosY)
+	            {
+	                transform->position.y = value;
+	            }
+	            else if (control == editPosZ)
+	            {
+	                transform->position.z = value;
+	            }
+                else if (control == editRotX || control == editRotY || control == editRotZ)
+                {
+                    wchar_t textX[64]{};
+                    wchar_t textY[64]{};
+                    wchar_t textZ[64]{};
+
+                    // read in all three rotation input fields
+                    GetWindowTextW(editRotX, textX, 64);
+                    GetWindowTextW(editRotY, textY, 64);
+                    GetWindowTextW(editRotZ, textZ, 64);
+
+                    wchar_t* endX = nullptr;
+                    wchar_t* endY = nullptr;
+                    wchar_t* endZ = nullptr;
+
+                    float rotX = std::wcstof(textX, &endX);  // wchar_t* -> float [conversion]
+                    float rotY = std::wcstof(textY, &endY);
+                    float rotZ = std::wcstof(textZ, &endZ);
+
+                    if (endX == textX || endY == textY || endZ == textZ)
+                        return 0;
+
+                    XMVECTOR quaternion =
+                        XMQuaternionRotationRollPitchYaw(
+                            XMConvertToRadians(rotX), // pitch, X
+                            XMConvertToRadians(rotY), // yaw,   Y
+                            XMConvertToRadians(rotZ)  // roll,  Z
+                        );
+
+                    XMStoreFloat4(&transform->rotation, quaternion);
+                }
+
+	            // ----------------------------------------------------
+	            // CAMERA
+	            // ----------------------------------------------------
+
+	            else if (control == editFov)
+	            {
+	                // Inspector uses degrees,
+	                // Camera component stores radians
+	                camera->fov = XMConvertToRadians(value);
+	            }
+	            else if (control == editNear)
+	            {
+	                // Near plane must be positive
+	                if (value > MIN_NEAR_PLANE && value < camera->farPlane - MIN_PLANE_GAP)
+	                    camera->nearPlane = value;
+	            }
+	            else if (control == editFar)
+	            {
+	                // Far plane must be beyond near plane
+	                if (value > camera->nearPlane + MIN_PLANE_GAP)
+	                    camera->farPlane = value;
 	            }
 	        }
-	        break;
+
+	        return 0;
+	    }
+
 	    case WM_PAINT:
-	        {
-	            PAINTSTRUCT ps;
-	            HDC hdc = BeginPaint(hWnd, &ps);
-	            // TODO: Zeichencode, der hdc verwendet, hier einfügen...
-	            EndPaint(hWnd, &ps);
-	        }
-	        break;
+	    {
+	        PAINTSTRUCT ps{};
+	        HDC hdc = BeginPaint(hWnd, &ps);
+
+	        // Native Win32 child controls paint themselves.
+	        // DirectX renders separately into viewportWnd.
+
+	        EndPaint(hWnd, &ps);
+
+	        return 0;
+	    }
+
 	    case WM_DESTROY:
+	    {
 	        PostQuitMessage(0);
-	        break;
+	        return 0;
+	    }
+
 	    default:
-	        return DefWindowProc(hWnd, message, wParam, lParam);
+	        return DefWindowProc(
+	            hWnd,
+	            message,
+	            wParam,
+	            lParam
+	        );
     }
-    return 0;
+}
+
+/**
+ * Callback Function for Mouse-Events on HWND-objects.
+ *
+ * @param hwnd
+ * @param message
+ * @param wParam
+ * @param lParam
+ * @param subclassId
+ * @param refData
+ * @return
+ */
+LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData)
+{
+    if (!MainCameraInitialized)
+        return DefSubclassProc(
+            hwnd,
+            message,
+            wParam,
+            lParam
+        );
+
+    switch (message)
+    {
+        case WM_MOUSEMOVE:
+        {
+	    	// hovered-HWND not set yet (mouse entry on this HWND)
+            if (hoveredEdit != hwnd)
+            {
+                hoveredEdit = hwnd;
+
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(TRACKMOUSEEVENT);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = hwnd;
+
+                TrackMouseEvent(&track);
+            }
+
+            // Mouse position in SCREEN coordinates
+            POINT mouse{};
+            GetCursorPos(&mouse);
+
+            // Click -> drag transition
+            if (editMouseDown && draggedEdit == hwnd && !editDragging)
+            {
+                int distance =
+                    std::abs(mouse.x - dragStartMouseX);
+
+                if (distance >= DRAG_THRESHOLD)
+                {
+                    editDragging = true;
+
+                    // Start from the threshold position.
+                    previousMouseX = mouse.x;
+                }
+            }
+
+            // Actual numeric dragging
+            if (editDragging &&draggedEdit == hwnd)
+            {
+                int deltaX = mouse.x - previousMouseX;
+
+                if (deltaX != 0)
+                {
+                    Transform* transform = entityManager.GetComponent<Transform>(MainCamera);
+
+                    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+
+                    if (!transform || !camera)
+                        break;
+
+                    float sensitivity = 0.1f;  // TODO: GLOBAL VARIABLE
+                    float change = static_cast<float>(deltaX) * sensitivity;
+
+                    if (hwnd == editPosX)
+                        transform->position.x += change;
+                    else if (hwnd == editPosY)
+                        transform->position.y += change;
+                    else if (hwnd == editPosZ)
+                        transform->position.z += change;
+                    else if (hwnd == editRotX || hwnd == editRotY || hwnd == editRotZ) {
+                        // read in all three rotation input fields
+                        wchar_t textX[64]{}, textY[64]{}, textZ[64]{};
+                        GetWindowTextW(editRotX, textX, 64);
+                        GetWindowTextW(editRotY, textY, 64);
+                        GetWindowTextW(editRotZ, textZ, 64);
+
+                        wchar_t* endX = nullptr;
+                        wchar_t* endY = nullptr;
+                        wchar_t* endZ = nullptr;
+
+                        float rotX = std::wcstof(textX, &endX);  // wchar_t* -> float [conversion]
+                        float rotY = std::wcstof(textY, &endY);
+                        float rotZ = std::wcstof(textZ, &endZ);
+
+                        if (endX == textX || endY == textY || endZ == textZ)
+                            return 0;
+
+                        XMVECTOR quaternion =
+                            XMQuaternionRotationRollPitchYaw(
+                                XMConvertToRadians(rotX + (hwnd == editRotX ? change : 0)), // pitch, X
+                                XMConvertToRadians(rotY + (hwnd == editRotY ? change : 0)), // yaw,   Y
+                                XMConvertToRadians(rotZ + (hwnd == editRotZ ? change : 0))  // roll,  Z
+                            );
+
+                        XMStoreFloat4(&transform->rotation, quaternion);
+                    }
+                    else if (hwnd == editFov)
+                        camera->fov += XMConvertToRadians(change);
+                    else if (hwnd == editNear)
+                    {
+                        float newNearPlane = camera->nearPlane + change;
+
+                        // > MIN_NEAR_PLANE && < FAR-PLANE
+                        newNearPlane = std::clamp(
+                            newNearPlane,
+                            MIN_NEAR_PLANE,
+                            camera->farPlane - MIN_PLANE_GAP
+                        );
+
+                        camera->nearPlane = newNearPlane;
+                    }
+                    else if (hwnd == editFar)
+                    {
+                        float newFarPlane = camera->farPlane + change;
+
+                        // >= Near-Plane
+                        newFarPlane = std::max<float>(
+                            newFarPlane,
+                            camera->nearPlane + MIN_PLANE_GAP
+                        );
+
+                        camera->farPlane = newFarPlane;
+                    }
+
+                    UpdateCameraInspector();
+
+                    previousMouseX = mouse.x;
+                }
+
+                // Don't let EDIT select text while numeric dragging.
+                return 0;
+            }
+
+            // Not dragging -> normal text selection behavior.
+            break;
+        }
+
+	    case WM_MOUSELEAVE:
+        {
+            if (hoveredEdit == hwnd)
+                hoveredEdit = nullptr;
+
+            break;
+        }
+
+        case WM_LBUTTONDOWN:
+        {
+            editMouseDown = true;
+            editDragging = false;
+            draggedEdit = hwnd;
+
+            POINT mouse{};
+            GetCursorPos(&mouse);
+
+            dragStartMouseX = mouse.x;
+            previousMouseX = mouse.x;
+
+            // WE own the mouse gesture until we know
+            // whether this is a click or drag.
+            SetCapture(hwnd);
+
+            // Do NOT call DefSubclassProc here.
+            return 0;
+        }
+
+        case WM_LBUTTONUP:
+        {
+            if (draggedEdit != hwnd)
+                break;
+
+            bool wasDragging = editDragging;
+
+            editMouseDown = false;
+            editDragging = false;
+            draggedEdit = nullptr;
+
+            if (GetCapture() == hwnd)
+                ReleaseCapture();
+
+            if (!wasDragging)
+            {
+                // It was a CLICK, not a drag.
+                // Give keyboard focus to the edit box.
+                SetFocus(hwnd);
+
+                // Select the complete numeric value.
+                SendMessageW(
+                    hwnd,
+                    EM_SETSEL,
+                    0,
+                    -1
+                );
+            }
+
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED:
+        case WM_CANCELMODE:
+        {
+            editMouseDown = false;
+            editDragging = false;
+            draggedEdit = nullptr;
+
+            break;
+        }
+    }
+
+    return DefSubclassProc(hwnd, message, wParam, lParam);
 }
 
 // Meldungshandler für Infofeld.
