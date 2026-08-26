@@ -6,6 +6,8 @@
 #include <memory>
 #include <utility>
 #include <algorithm>
+#include <Windows.h>
+#include <sstream>
 
 #define GRAVITY 9.81f
 
@@ -148,3 +150,19 @@ struct TypeHash
 
 // CONSTANTS
 constexpr ArchetypeId EMPTY_ARCHETYPE_ID = 0;
+
+// GLOBAL FUNCTIONS
+
+inline bool CheckHR(HRESULT hr, const char* message)
+{
+    if (FAILED(hr))
+    {
+        std::ostringstream oss;
+        oss << message << "\nHRESULT: 0x" << std::hex << hr;
+
+        MessageBoxA(nullptr, oss.str().c_str(), "DirectX Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    return true;
+}

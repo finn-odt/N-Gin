@@ -25,6 +25,9 @@
 #include <DirectXMath.h>
 
 #include "Components.h"
+#include "EntityManager.h"
+#include "MeshManager.h"
+
 using namespace DirectX;
 
 
@@ -45,6 +48,9 @@ struct Rotation;
 struct Vertex;
 struct Triangle;
 struct Matrix3x3; 
+
+EntityManager entityManager;
+std::unique_ptr<MeshManager> meshManager;
 
 float cubeRotation = 0.0f;
 
@@ -76,22 +82,13 @@ struct MatrixBufferData  // needs to correspond to the Data Structure in the Sha
 ID3D11InputLayout* layout;
 ID3D11PixelShader* pixelShader;
 ID3D11VertexShader* vertexShader;
-ID3D11Buffer* vertexBuffer;
 ID3D11Buffer* matrixBuffer = nullptr;
-
-UINT vertexBufferByteSize;
-UINT numberOfBufferVertices;
-
-std::vector<Triangle> triangles;
-std::vector<Vertex> testVertices;
-bool graphicsUpdateRequired = false;
 
 bool InitD3D(HWND Hwnd);
 void Render(void);
 void FixedUpdate(float fixedDeltaTime);
 void CleanD3D(void);
 bool InitGraphics(void);
-bool UpdateGraphics(void);
 bool InitPipeline(void);  // setup shaders, const. buffers, ...
 
 XMMATRIX GetWorldMatrix(const Transform& transform);
@@ -115,189 +112,6 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-
-inline float Length3(float x, float y, float z) noexcept
-{
-    return std::sqrt(x * x + y * y + z * z);
-}
-
-struct Position {
-    FLOAT X, Y, Z;
-
-    float Length() const
-    {
-        return Length3(X, Y, Z);
-    }
-
-    Position Normalize() const
-    {
-        Position p = *this;
-        float d = Length();
-
-        if (d > 0.0f)  // do not divide by 0
-        {
-            p.X /= d;
-            p.Y /= d;
-            p.Z /= d;
-        }
-
-        return p;
-    }
-
-    Position& operator*=(const float& f) noexcept
-    {
-        X *= f;
-        Y *= f;
-        Z *= f;
-        return *this;
-    }
-
-    Position operator*(const float& f) noexcept
-    {
-        Position p = *this;
-        p.X *= f;
-        p.Y *= f;
-        p.Z *= f;
-        return p;
-    }
-
-    Position& operator+=(const Position& p) noexcept
-    {
-        X += p.X;
-        Y += p.Y;
-        Z += p.Z;
-        return *this;
-    }
-
-    Position& operator+=(const float& f) noexcept
-    {
-        X += f;
-        Y += f;
-        Z += f;
-        return *this;
-    }
-};
-struct Rotation {
-    FLOAT X, Y, Z;
-
-    Rotation& operator*=(const float& f) noexcept
-    {
-        X *= f;
-        Y *= f;
-        Z *= f;
-        return *this;
-    }
-};
-struct Vertex
-{
-    Position POS;
-    D3DXCOLOR Color;
-    Vertex& operator+=(const Position& p) noexcept
-    {
-        POS.X += p.X;
-        POS.Y += p.Y;
-        POS.Z += p.Z;
-        return *this;
-    }
-
-    Vertex operator+(const Position& p) const noexcept
-    {
-        Vertex result = *this;
-        result += p;
-        return result;
-    }
-
-    Vertex operator*(const float& f) const noexcept
-    {
-        Vertex result = *this;
-        result.POS *= f;
-        return result;
-    }
-};
-struct Matrix3x3 {
-    std::array<std::array<float, 3>, 3> data = {{
-        {{0.0f, 0.0f, 0.0f}},  // first row
-        {{0.0f, 0.0f, 0.0f}},
-        {{0.0f, 0.0f, 0.0f}}
-    }};
-
-    std::array<float, 3>& operator[](int row) noexcept
-    {
-        return data[row];
-    }
-
-    const std::array<float, 3>& operator[](int row) const noexcept
-    {
-        return data[row];
-    }
-
-    Matrix3x3& operator*=(const Matrix3x3& m) noexcept
-    {
-        *this = *this * m;
-        return *this;
-    }
-
-    Matrix3x3 operator*(const Matrix3x3& m) const noexcept
-    {
-        Matrix3x3 result;  // filled with 0s
-
-        for (int row = 0; row < 3; row++)
-        {
-            for (int col = 0; col < 3; col++)
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    result[row][col] += data[row][i] * m[i][col];
-                }
-            }
-        }
-
-        return result;
-    }
-
-    Position operator*(const Position& p) const noexcept
-    {
-        Position result;
-
-        result.X = data[0][0] * p.X + data[0][1] * p.Y + data[0][2] * p.Z;
-        result.Y = data[1][0] * p.X + data[1][1] * p.Y + data[1][2] * p.Z;
-        result.Z = data[2][0] * p.X + data[2][1] * p.Y + data[2][2] * p.Z;
-
-        return result;
-    }
-
-    Vertex operator*(const Vertex& v) const noexcept
-    {
-        Vertex result = v;
-        result.POS = *this * v.POS;
-        return result;
-    }
-};
-struct Triangle {
-    Vertex A, B, C;
-    Position POS;
-    Rotation ROT;
-    float SCALE;
-    float rotationSpeed;
-    Position velocity;
-    float speed;
-
-    std::vector<Vertex> GetLinearList() const
-    {
-        Matrix3x3 rotationMatrix =
-            GetRotationMatrix(
-                DegreesToRadians(ROT.X),
-                DegreesToRadians(ROT.Y),
-                DegreesToRadians(ROT.Z)
-            );
-
-        Vertex a = rotationMatrix * (A * SCALE);
-        Vertex b = rotationMatrix * (B * SCALE);
-        Vertex c = rotationMatrix * (C * SCALE);
-
-        return { a + POS, b + POS, c + POS };
-    }
-};
 
 // APIENTRY 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,  // handler for the current window-instance (points to current window)
@@ -368,20 +182,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,  // handler for the current wind
     return (int) msg.wParam;
 }
 
-bool CheckHR(HRESULT hr, const char* message)
-{
-    if (FAILED(hr))
-    {
-        std::ostringstream oss;
-        oss << message << "\nHRESULT: 0x" << std::hex << hr;
-
-        MessageBoxA(nullptr, oss.str().c_str(), "DirectX Error", MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    return true;
-}
-
 float RandomFloat(float min, float max)  // both included
 {
     static std::random_device rd;
@@ -423,6 +223,8 @@ bool InitD3D(HWND Hwnd)
     hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, NULL, NULL, NULL, D3D11_SDK_VERSION, &scd, &swapchain, &dev, NULL, &devcon);
     if (!CheckHR(hr, "Failed to create D3D11 device and swapchain"))
         return false;
+
+    meshManager = std::make_unique<MeshManager>(dev);
 
     // BACK BUFFER
     ID3D11Texture2D* pBackBuffer;
@@ -493,9 +295,6 @@ bool InitD3D(HWND Hwnd)
 
 void Render(void)
 {
-    if(graphicsUpdateRequired)
-        UpdateGraphics();
-
     // do not draw on old frame:
     devcon->ClearRenderTargetView(backBuffer, BASE_COLOR);
     devcon->ClearDepthStencilView(depthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
@@ -517,58 +316,99 @@ void Render(void)
 
     projection = GetProjectionMatrix(camera, aspect);
 
-    // Object transform
-    world = XMMatrixRotationX(XMConvertToRadians(cubeRotation * 0.5f)) *
-        XMMatrixRotationY(XMConvertToRadians(cubeRotation));
-	// TODO: change to transform-component of object
-
-    // Send W/V/P Matrices to HLSL
-    D3D11_MAPPED_SUBRESOURCE mappedResource{};
-
-    HRESULT hr = devcon->Map(
-        matrixBuffer,
+    // Pipeline state shared by all mesh objects
+    devcon->IASetPrimitiveTopology(
+        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+    );
+    
+    devcon->VSSetConstantBuffers(  // b0 = MatrixBuffer in HLSL
         0,
-        D3D11_MAP_WRITE_DISCARD,
-        0,
-        &mappedResource
+        1,
+        &matrixBuffer
     );
 
-    if (SUCCEEDED(hr))
-    {
-        MatrixBufferData* matrixData = static_cast<MatrixBufferData*>(mappedResource.pData);
+    entityManager.ForEach<Transform, MeshRenderer>(
+        [&](EntityId entity,
+            Transform& transform,
+            MeshRenderer& renderer)
+        {
+            if (!renderer.visible)
+                return;
 
-        matrixData->world = XMMatrixTranspose(world);  // shader multiplies P * M
+            if (renderer.mesh == INVALID_MESH)
+                return;
 
-        matrixData->view = XMMatrixTranspose(view);
 
-        matrixData->projection = XMMatrixTranspose(projection);
+            // 1. Get GPU mesh from MeshHandle
+            const Mesh& mesh = meshManager->GetMesh(renderer.mesh);
 
-        devcon->Unmap(matrixBuffer, 0);
-    }
 
-    // write into constant buffer
-    devcon->VSSetConstantBuffers(0,1, &matrixBuffer);
+            // 2. World matrix comes from THIS entity's transform
+            XMMATRIX world = GetWorldMatrix(transform);
 
-    UINT Stride = sizeof(Vertex);
-    UINT offset = 0;
 
-    devcon->IASetVertexBuffers(0, 1, &vertexBuffer, &Stride, &offset);
-    devcon->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            // 3. Upload this entity's W/V/P
+            D3D11_MAPPED_SUBRESOURCE mappedResource{};
 
-    devcon->Draw(numberOfBufferVertices, 0);
+            HRESULT hr = devcon->Map(
+                matrixBuffer,
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                &mappedResource
+            );
 
-    swapchain->Present(0, 0);  // just show it (back buffer is swapped to front)
-}
+            if (FAILED(hr))
+                return;
 
-void SetColorOfVertices(Triangle& tri) {
-    tri.A.Color = D3DXCOLOR(RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), 1.0f);
-    tri.B.Color = D3DXCOLOR(RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), 1.0f);
-    tri.C.Color = D3DXCOLOR(RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), RandomFloat(0.0f, 1.0f), 1.0f);
-}
+            MatrixBufferData* matrixData = static_cast<MatrixBufferData*>(
+							                    mappedResource.pData
+							                );
 
-static bool CanBeCulled2D(const Triangle& tri)
-{
-	return tri.POS.X > 1.0f || tri.POS.X < -1.0f || tri.POS.Y > 1.0f || tri.POS.Y < -1.0f;
+            matrixData->world =
+                XMMatrixTranspose(world);
+
+            matrixData->view =
+                XMMatrixTranspose(view);
+
+            matrixData->projection =
+                XMMatrixTranspose(projection);
+
+            devcon->Unmap(
+                matrixBuffer,
+                0
+            );
+
+
+            // 4. Bind THIS entity's mesh
+
+            UINT stride = mesh.stride;
+            UINT offset = 0;
+
+            ID3D11Buffer* vertexBuffer = mesh.vertexBuffer.Get();
+
+            devcon->IASetVertexBuffers(  // vertex buffer
+                0,
+                1,
+                &vertexBuffer,
+                &stride,
+                &offset
+            );
+
+            devcon->IASetIndexBuffer(  // index buffer (for vertices)
+                mesh.indexBuffer.Get(),
+                DXGI_FORMAT_R32_UINT,
+                0
+            );
+
+
+            // 5. Draw THIS entity
+            devcon->DrawIndexed(mesh.indexCount,0,0);
+        }
+    );
+
+    // Show finished frame
+    swapchain->Present(0,0);
 }
 
 void FixedUpdate(float fixedDeltaTime) {
@@ -661,28 +501,38 @@ bool InitPipeline()  // CREATE SHADERS
     devcon->VSSetShader(vertexShader, NULL, NULL);
     devcon->PSSetShader(pixelShader, NULL, NULL);
 
-    D3D11_INPUT_ELEMENT_DESC ied[] = {
-		{
-			"POSITION",
-			0,
-			DXGI_FORMAT_R32G32B32_FLOAT,
-			0,
-			0,
-			D3D11_INPUT_PER_VERTEX_DATA,
-			0
-		},
-		{
-			"COLOR",
+    D3D11_INPUT_ELEMENT_DESC ied[] =
+    {
+        {
+            "POSITION",
             0,
-            DXGI_FORMAT_R32G32B32A32_FLOAT,
+            DXGI_FORMAT_R32G32B32_FLOAT,  // 3D -> 12 Byte
+            0,
+            0,
+            D3D11_INPUT_PER_VERTEX_DATA,
+            0
+        },
+        {
+            "NORMAL",
+            0,
+            DXGI_FORMAT_R32G32B32_FLOAT,  // 3D -> 12 Byte
             0,
             12,
             D3D11_INPUT_PER_VERTEX_DATA,
             0
-		}
+        },
+        {
+            "TEXCOORD",
+            0,
+            DXGI_FORMAT_R32G32_FLOAT,  // 2D -> 8 Byte
+            0,
+            24,
+            D3D11_INPUT_PER_VERTEX_DATA,
+            0
+        }
     };
 
-    hr = dev->CreateInputLayout(ied, 2, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
+    hr = dev->CreateInputLayout(ied, 3, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
     if (!CheckHR(hr, "Failed to create input layout"))
     {
         VS->Release();
@@ -721,183 +571,50 @@ bool InitPipeline()  // CREATE SHADERS
     return true;
 }
 
-float DegreesToRadians(float degrees)
-{
-    return degrees * PI / 180.0f;
-}
-
-Matrix3x3 GetRotationMatrix(const float eulerX, const float eulerY, const float eulerZ)
-{
-    float cx = std::cos(eulerX);
-    float sx = std::sin(eulerX);
-
-    float cy = std::cos(eulerY);
-    float sy = std::sin(eulerY);
-
-    float cz = std::cos(eulerZ);
-    float sz = std::sin(eulerZ);
-
-    Matrix3x3 xRot = {{{
-        {{ 1.0f, 0.0f, 0.0f }},
-        {{ 0.0f, cx,  -sx  }},
-        {{ 0.0f, sx,   cx  }}
-    }}};
-
-    Matrix3x3 yRot = {{{
-        {{  cy,  0.0f, sy   }},
-        {{ 0.0f, 1.0f, 0.0f }},
-        {{ -sy,  0.0f, cy   }}
-    }}};
-
-    Matrix3x3 zRot = {{{
-        {{ cz,  -sz,  0.0f }},
-        {{ sz,   cz,  0.0f }},
-        {{ 0.0f, 0.0f, 1.0f }}
-    }}};
-
-    return xRot * yRot * zRot;
-}
-
-std::vector<Vertex> TrianglesToLinearVertices() {
-    std::vector<Vertex> result;
-
-    auto AddTriangleVertices = [&](const Triangle& tri)
-    {
-        std::vector<Vertex> triVertices = tri.GetLinearList();
-        result.insert(result.end(), triVertices.begin(), triVertices.end());
-    };
-
-    for(int i = 0; i < triangles.size(); i++) {
-        AddTriangleVertices(triangles[i]);
-    }
-    return result;
-}
-
-Triangle GetRandomTriangle(float xPosition, float yPosition, Position vel)
-{
-    bool xPosOK = xPosition >= -1.0f && xPosition <= 1.0f;
-    bool yPosOK = yPosition >= -1.0f && yPosition <= 1.0f;
-    float xPos = xPosOK ? xPosition : RandomFloat(-1.0f, 1.0f);
-    float yPos = yPosOK ? yPosition : RandomFloat(-1.0f, 1.0f);
-
-    float zRot = RandomFloat(0.0f, 90.0f);
-
-    float scale = RandomFloat(0.05f, 0.15f);
-
-    float rotationSpeed = RandomFloat(50.0f, 150.0f);
-
-    float speed = RandomFloat(0.1f, 0.12f);
-
-    Position velocity = vel.Length() > 0 ? vel : Position{ xPos, yPos, 0 };
-
-    return {
-        { 0.0f,  1.0f, 0.0f, D3DXCOLOR(1, 0, 0, 1) },
-        { 1.0f, -1.0f, 0.0f, D3DXCOLOR(0, 1, 0, 1) },
-        {-1.0f, -1.0f, 0.0f, D3DXCOLOR(0, 0, 1, 1) },
-        {xPos, yPos, 0},
-        {0, 0, zRot},
-        scale,
-        rotationSpeed,
-        velocity.Normalize(),
-        speed
-    };
-}
-
 bool InitGraphics()
 {
-    testVertices =
+    try
     {
-        // FRONT
-        { {-1, -1, -1}, D3DXCOLOR(1, 0, 0, 1) },
-        { {-1,  1, -1}, D3DXCOLOR(1, 0, 0, 1) },
-        { { 1,  1, -1}, D3DXCOLOR(1, 0, 0, 1) },
+        MeshHandle mesh = meshManager->LoadMesh("Assets/testmodel.fbx");
 
-        { {-1, -1, -1}, D3DXCOLOR(1, 0, 0, 1) },
-        { { 1,  1, -1}, D3DXCOLOR(1, 0, 0, 1) },
-        { { 1, -1, -1}, D3DXCOLOR(1, 0, 0, 1) },
+        EntityId entity = entityManager.AddEntity();
 
-        // BACK
-        { {-1, -1,  1}, D3DXCOLOR(0, 1, 0, 1) },
-        { { 1,  1,  1}, D3DXCOLOR(0, 1, 0, 1) },
-        { {-1,  1,  1}, D3DXCOLOR(0, 1, 0, 1) },
+        Transform transform;
+        transform.position = { 0.0f, 0.0f, 0.0f };
+        XMStoreFloat4(
+            &transform.rotation,
+            XMQuaternionRotationRollPitchYaw(
+                -XM_PIDIV2,       // X (pitch)
+                XM_PI,  // Y (yaw) [PI/2 = 90°]
+                0.0f        // Z (roll)
+            )
+        );
+        transform.scale = { 1.0f, 1.0f, 1.0f };
 
-        { {-1, -1,  1}, D3DXCOLOR(0, 1, 0, 1) },
-        { { 1, -1,  1}, D3DXCOLOR(0, 1, 0, 1) },
-        { { 1,  1,  1}, D3DXCOLOR(0, 1, 0, 1) },
+        entityManager.AddComponent(entity, transform);
 
-        // LEFT
-        { {-1, -1,  1}, D3DXCOLOR(0, 0, 1, 1) },
-        { {-1,  1,  1}, D3DXCOLOR(0, 0, 1, 1) },
-        { {-1,  1, -1}, D3DXCOLOR(0, 0, 1, 1) },
+        entityManager.AddComponent(
+            entity,
+            MeshRenderer{
+                mesh,
+                INVALID_MATERIAL,
+                true
+            }
+        );
 
-        { {-1, -1,  1}, D3DXCOLOR(0, 0, 1, 1) },
-        { {-1,  1, -1}, D3DXCOLOR(0, 0, 1, 1) },
-        { {-1, -1, -1}, D3DXCOLOR(0, 0, 1, 1) },
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        MessageBoxA(
+            nullptr,
+            e.what(),
+            "Mesh loading failed",
+            MB_OK | MB_ICONERROR
+        );
 
-        // RIGHT
-        { {1, -1, -1}, D3DXCOLOR(1, 1, 0, 1) },
-        { {1,  1, -1}, D3DXCOLOR(1, 1, 0, 1) },
-        { {1,  1,  1}, D3DXCOLOR(1, 1, 0, 1) },
-
-        { {1, -1, -1}, D3DXCOLOR(1, 1, 0, 1) },
-        { {1,  1,  1}, D3DXCOLOR(1, 1, 0, 1) },
-        { {1, -1,  1}, D3DXCOLOR(1, 1, 0, 1) },
-
-        // TOP
-        { {-1, 1, -1}, D3DXCOLOR(1, 0, 1, 1) },
-        { {-1, 1,  1}, D3DXCOLOR(1, 0, 1, 1) },
-        { { 1, 1,  1}, D3DXCOLOR(1, 0, 1, 1) },
-
-        { {-1, 1, -1}, D3DXCOLOR(1, 0, 1, 1) },
-        { { 1, 1,  1}, D3DXCOLOR(1, 0, 1, 1) },
-        { { 1, 1, -1}, D3DXCOLOR(1, 0, 1, 1) },
-
-        // BOTTOM
-        { {-1, -1,  1}, D3DXCOLOR(0, 1, 1, 1) },
-        { {-1, -1, -1}, D3DXCOLOR(0, 1, 1, 1) },
-        { { 1, -1, -1}, D3DXCOLOR(0, 1, 1, 1) },
-
-        { {-1, -1,  1}, D3DXCOLOR(0, 1, 1, 1) },
-        { { 1, -1, -1}, D3DXCOLOR(0, 1, 1, 1) },
-        { { 1, -1,  1}, D3DXCOLOR(0, 1, 1, 1) }
-    };
-
-    return UpdateGraphics();
-}
-
-bool UpdateGraphics() {
-    graphicsUpdateRequired = FALSE;
-
-    //std::vector<Vertex> vertices = TrianglesToLinearVertices();
-    const std::vector<Vertex>& vertices = testVertices;
-
-    D3D11_BUFFER_DESC vertexBufferDesc; // buffer description
-    ZeroMemory(&vertexBufferDesc, sizeof(D3D11_BUFFER_DESC));
-
-    vertexBufferByteSize = sizeof(Vertex) * vertices.size();
-    numberOfBufferVertices = vertices.size();
-
-    vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;  // could be anything
-    vertexBufferDesc.ByteWidth = vertexBufferByteSize;
-    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;  // this is a vertex buffer
-    vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;  // full access to the buffer
-
-    HRESULT hr = dev->CreateBuffer(&vertexBufferDesc, NULL, &vertexBuffer);
-    if (!CheckHR(hr, "Failed to create vertex buffer"))
         return false;
-
-    // copy vertices into buffer and give to pipeline
-    D3D11_MAPPED_SUBRESOURCE ms;
-    ZeroMemory(&ms, sizeof(D3D11_MAPPED_SUBRESOURCE));
-
-    hr = devcon->Map(vertexBuffer, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &ms);
-    if (!CheckHR(hr, "Failed to map vertex buffer"))
-        return false;
-
-    memcpy(ms.pData, vertices.data(), sizeof(Vertex) * vertices.size());
-    devcon->Unmap(vertexBuffer, NULL);  // close copy process
-
-    return true;
+    }
 }
 
 void CleanD3D(void)
@@ -918,12 +635,6 @@ void CleanD3D(void)
     {
         matrixBuffer->Release();
         matrixBuffer = nullptr;
-    }
-
-    if (vertexBuffer)
-    {
-	    vertexBuffer->Release();
-    	vertexBuffer = nullptr;
     }
 
     if (layout)
@@ -1187,244 +898,226 @@ int workWidth  = mi.rcWork.right - mi.rcWork.left;
 int workHeight = mi.rcWork.bottom - mi.rcWork.top;
  **/
 
+std::vector<Vertex> GetCubeVertices()
+{
+    return {
+        // ========================================================
+        // FRONT (-Z)
+        // ========================================================
+        {
+            {-1.0f, -1.0f, -1.0f},   // position
+            { 0.0f,  0.0f, -1.0f},   // normal
+            { 0.0f,  1.0f}            // UV
+        },
+        {
+            {-1.0f,  1.0f, -1.0f},
+            { 0.0f,  0.0f, -1.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            { 1.0f,  1.0f, -1.0f},
+            { 0.0f,  0.0f, -1.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            {-1.0f, -1.0f, -1.0f},
+            { 0.0f,  0.0f, -1.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f, -1.0f},
+            { 0.0f,  0.0f, -1.0f},
+            { 1.0f,  0.0f}
+        },
+        {
+            { 1.0f, -1.0f, -1.0f},
+            { 0.0f,  0.0f, -1.0f},
+            { 1.0f,  1.0f}
+        },
+
+
+        // ========================================================
+        // BACK (+Z)
+        // ========================================================
+        {
+            {-1.0f, -1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 1.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            {-1.0f,  1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            {-1.0f, -1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 1.0f,  1.0f}
+        },
+        {
+            { 1.0f, -1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 0.0f,  0.0f,  1.0f},
+            { 0.0f,  0.0f}
+        },
+
+
+        // ========================================================
+        // LEFT (-X)
+        // ========================================================
+        {
+            {-1.0f, -1.0f,  1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            {-1.0f,  1.0f,  1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            {-1.0f,  1.0f, -1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            {-1.0f, -1.0f,  1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            {-1.0f,  1.0f, -1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+        {
+            {-1.0f, -1.0f, -1.0f},
+            {-1.0f,  0.0f,  0.0f},
+            { 1.0f,  1.0f}
+        },
+
+
+        // ========================================================
+        // RIGHT (+X)
+        // ========================================================
+        {
+            { 1.0f, -1.0f, -1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f, -1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            { 1.0f, -1.0f, -1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+        {
+            { 1.0f, -1.0f,  1.0f},
+            { 1.0f,  0.0f,  0.0f},
+            { 1.0f,  1.0f}
+        },
+
+
+        // ========================================================
+        // TOP (+Y)
+        // ========================================================
+        {
+            {-1.0f,  1.0f, -1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            {-1.0f,  1.0f,  1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            {-1.0f,  1.0f, -1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f,  1.0f,  1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+        {
+            { 1.0f,  1.0f, -1.0f},
+            { 0.0f,  1.0f,  0.0f},
+            { 1.0f,  1.0f}
+        },
+
+
+        // ========================================================
+        // BOTTOM (-Y)
+        // ========================================================
+        {
+            {-1.0f, -1.0f,  1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            {-1.0f, -1.0f, -1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 0.0f,  0.0f}
+        },
+        {
+            { 1.0f, -1.0f, -1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+
+        {
+            {-1.0f, -1.0f,  1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 0.0f,  1.0f}
+        },
+        {
+            { 1.0f, -1.0f, -1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 1.0f,  0.0f}
+        },
+        {
+            { 1.0f, -1.0f,  1.0f},
+            { 0.0f, -1.0f,  0.0f},
+            { 1.0f,  1.0f}
+        }
+    };
+}
 
 
 
-/*
 
-	#pragma once
-
-	#include <vector>
-	#include <string>
-	#include <cstdint>
-	#include <stdexcept>
-
-	#include <d3d11.h>
-	#include <wrl/client.h>
-	#include <DirectXMath.h>
-	
-	#include "ufbx.h"
-
-	using MeshHandle = uint32_t;
-
-	inline constexpr MeshHandle INVALID_MESH = 0;
-
-	struct Vertex
-	{
-	    DirectX::XMFLOAT3 position;
-	    DirectX::XMFLOAT3 normal;
-	    DirectX::XMFLOAT2 texCoord;
-	};
-
-	struct CpuMeshData
-	{
-	    std::vector<Vertex> vertices;
-	    std::vector<uint32_t> indices;
-	};
-
-	struct Mesh
-	{
-	    Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
-	    Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
-
-	    uint32_t vertexCount = 0;
-	    uint32_t indexCount = 0;
-	    uint32_t stride = sizeof(Vertex);
-	};
-
-	class MeshManager
-	{
-		private:
-		    ID3D11Device* device = nullptr;
-
-		    // index 0 is reserved for INVALID_MESH
-		    std::vector<Mesh> meshes;
-
-		public:
-		    explicit MeshManager(ID3D11Device* device)
-		        : device(device)
-		    {
-		        meshes.emplace_back(); // invalid mesh at index 0
-		    }
-
-		    MeshHandle LoadMesh(const std::string& path);
-
-		    const Mesh& GetMesh(MeshHandle handle) const;
-
-		private:
-		    MeshHandle CreateMeshFromCpuData(const CpuMeshData& data);
-	};
-
-
-
-	------ .HPP ------
-
-	MeshHandle MeshManager::CreateMeshFromCpuData(const CpuMeshData& data)
-	{
-	    if (!device)  // TODO: dev is my name I think
-	        throw std::runtime_error("MeshManager has no D3D11 device.");
-
-	    if (data.vertices.empty() || data.indices.empty())
-	        throw std::runtime_error("Cannot create mesh from empty data.");
-
-	    Mesh mesh;
-	    mesh.vertexCount = static_cast<uint32_t>(data.vertices.size());
-	    mesh.indexCount = static_cast<uint32_t>(data.indices.size());
-	    mesh.stride = sizeof(Vertex);
-
-	    D3D11_BUFFER_DESC vertexBufferDesc = {};
-	    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-	    vertexBufferDesc.ByteWidth = static_cast<UINT>(sizeof(Vertex) * data.vertices.size());
-	    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-
-	    D3D11_SUBRESOURCE_DATA vertexData = {};
-	    vertexData.pSysMem = data.vertices.data();
-
-	    HRESULT hr = device->CreateBuffer(
-	        &vertexBufferDesc,
-	        &vertexData,
-	        mesh.vertexBuffer.GetAddressOf()
-	    );
-
-	    if (!CheckHR(hr, "Failed to create vertex buffer."))
-			return false;
-
-	    D3D11_BUFFER_DESC indexBufferDesc = {};
-	    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-	    indexBufferDesc.ByteWidth = static_cast<UINT>(sizeof(uint32_t) * data.indices.size());
-	    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-
-	    D3D11_SUBRESOURCE_DATA indexData = {};
-	    indexData.pSysMem = data.indices.data();
-
-	    hr = device->CreateBuffer(
-	        &indexBufferDesc,
-	        &indexData,
-	        mesh.indexBuffer.GetAddressOf()
-	    );
-
-        if (!CheckHR(hr, "Failed to create index buffer."))
-            return false;
-
-	    meshes.push_back(std::move(mesh));
-
-	    return static_cast<MeshHandle>(meshes.size() - 1);
-	}
-
-
-    MeshHandle MeshManager::LoadMesh(const std::string& path)
-	{
-	    CpuMeshData data = LoadMeshCpuWithUfbx(path);
-	    return CreateMeshFromCpuData(data);
-	}
-
-	CpuMeshData LoadMeshCpuWithUfbx(const std::string& path)
-	{
-	    ufbx_load_opts opts = {};
-	    ufbx_error error = {};
-
-	    ufbx_scene* scene = ufbx_load_file(path.c_str(), &opts, &error);
-
-	    if (!scene)
-	        throw std::runtime_error(error.description.data);
-
-	    CpuMeshData result;
-
-	    for (size_t meshIndex = 0; meshIndex < scene->meshes.count; ++meshIndex)
-	    {
-	        ufbx_mesh* mesh = scene->meshes.data[meshIndex];
-
-	        std::vector<uint32_t> triIndices(mesh->max_face_triangles * 3);
-
-	        for (size_t faceIndex = 0; faceIndex < mesh->faces.count; ++faceIndex)
-	        {
-	            ufbx_face face = mesh->faces.data[faceIndex];
-
-	            uint32_t numTriangles = ufbx_triangulate_face(
-	                triIndices.data(),
-	                triIndices.size(),
-	                mesh,
-	                face
-	            );
-
-	            for (uint32_t i = 0; i < numTriangles * 3; ++i)
-	            {
-	                uint32_t index = triIndices[i];
-
-	                ufbx_vec3 pos = ufbx_get_vertex_vec3(&mesh->vertex_position, index);
-	                ufbx_vec3 normal = ufbx_get_vertex_vec3(&mesh->vertex_normal, index);
-	                ufbx_vec2 uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, index);
-
-	                Vertex vertex = {};
-	                vertex.position = {
-	                    static_cast<float>(pos.x),
-	                    static_cast<float>(pos.y),
-	                    static_cast<float>(pos.z)
-	                };
-
-	                vertex.normal = {
-	                    static_cast<float>(normal.x),
-	                    static_cast<float>(normal.y),
-	                    static_cast<float>(normal.z)
-	                };
-
-	                vertex.texCoord = {
-	                    static_cast<float>(uv.x),
-	                    static_cast<float>(uv.y)
-	                };
-
-	                result.vertices.push_back(vertex);
-	                result.indices.push_back(static_cast<uint32_t>(result.indices.size()));
-	            }
-	        }
-	    }
-
-	    ufbx_free_scene(scene);
-	    return result;
-	}
-
-	const Mesh& MeshManager::GetMesh(MeshHandle handle) const
-	{
-	    if (handle == INVALID_MESH || handle >= meshes.size())
-	        throw std::runtime_error("Invalid mesh handle.");
-
-	    return meshes[handle];
-	}
-
-
-	// USAGE
-    EntityId entity = entityManager.AddEntity();
-
-	MeshHandle playerMesh = meshManager.LoadMeshFromObj("Assets/player.obj");
-    //LoadMesh("Assets/cube.obj");
-	//LoadMesh("Assets/character.fbx");
-
-	entityManager.AddComponent(entity, Transform{});
-	entityManager.AddComponent(entity, MeshRenderer{ playerMesh });
-
-
-
-
-	const Mesh& mesh = meshManager.GetMesh(renderer.mesh);
-
-	UINT stride = mesh.stride;
-	UINT offset = 0;
-
-	deviceContext->IASetVertexBuffers(
-	    0,
-	    1,
-	    mesh.vertexBuffer.GetAddressOf(),
-	    &stride,
-	    &offset
-	);
-
-	deviceContext->IASetIndexBuffer(
-	    mesh.indexBuffer.Get(),
-	    DXGI_FORMAT_R32_UINT,
-	    0
-	);
-
-	deviceContext->DrawIndexed(mesh.indexCount, 0, 0);
-
-
-*/

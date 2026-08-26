@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <tuple>
 
 #include "Usings.h"
 #include "StackSet.h"
@@ -357,6 +358,57 @@ public:
 		const Archetype& archetype = archetypes[record.archetype];
 
 		return archetype.columnIndex.find(componentId) != archetype.columnIndex.end();
+	}
+
+	/**
+	 * Executes a given function on all
+	 * Entities that have the required
+	 * Component-structure.
+	 *
+	 * @param func Function that is executed for all fitting entities.
+	 */
+	template<typename... Components, typename Func>
+	void ForEach(Func&& func)
+	{
+		for (Archetype& archetype : archetypes)
+		{
+			// Archetype must contain every requested component.
+			const bool matches =
+				(archetype.columnIndex.contains(
+					GetComponentTypeId<Components>()
+				) && ...);
+
+			if (!matches)
+				continue;
+
+			// Resolve component columns once per archetype.
+			auto columns = std::tuple<Column<Components>*...>
+			{
+				static_cast<Column<Components>*>(
+					archetype.columns[
+						archetype.columnIndex.at(
+							GetComponentTypeId<Components>()
+						)
+					].get()
+				)...
+			};
+
+			for (size_t row = 0;
+				row < archetype.entities.size();
+				++row)
+			{
+				std::apply(
+					[&](auto*... column)
+					{
+						func(
+							archetype.entities[row],
+							column->data[row]...
+						);
+					},
+					columns
+				);
+			}
+		}
 	}
 };
 

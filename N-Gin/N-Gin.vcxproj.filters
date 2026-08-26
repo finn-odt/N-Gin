@@ -51,6 +51,9 @@
     <ClInclude Include="Camera.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="MeshManager.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="N-Gin.cpp">
@@ -60,6 +63,9 @@
       <Filter>Quelldateien</Filter>
     </ClCompile>
     <ClCompile Include="ufbx.c">
+      <Filter>Quelldateien</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshManager.cpp">
       <Filter>Quelldateien</Filter>
     </ClCompile>
   </ItemGroup>
@@ -75,5 +81,8 @@
     <Image Include="N-Gin.ico">
       <Filter>Ressourcendateien</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shader.shader" />
   </ItemGroup>
 </Project>

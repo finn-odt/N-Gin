@@ -132,6 +132,7 @@
     <ClInclude Include="Components.h" />
     <ClInclude Include="EntityManager.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="MeshManager.h" />
     <ClInclude Include="N-Gin.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="StackSet.h" />
@@ -141,6 +142,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="EntityManager.cpp" />
+    <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="N-Gin.cpp" />
     <ClCompile Include="ufbx.c" />
   </ItemGroup>
@@ -150,6 +152,9 @@
   <ItemGroup>
     <Image Include="N-Gin.ico" />
     <Image Include="small.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shader.shader" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
