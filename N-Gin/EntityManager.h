@@ -134,11 +134,39 @@ public:
 
 	~EntityManager() = default;
 
-	EntityId AddEntity();
+	EntityId AddEntity(const std::string& name = "Game Object");
 
 	bool RemoveEntity(EntityId id);
 
 	bool IsAlive(EntityId id) const;
+
+	/**
+	 * Get the name of an entity from
+	 * its EntityRecord.
+	 * 
+	 * @param entity ID of the Entity's name
+	 * @return Name as a string
+	 */
+	const std::string& GetEntityName(EntityId entity) const
+	{
+		return entityRecords[entity].name;
+	}
+
+	/**
+	 * Set the name of an entity in
+	 * its EntityRecord.
+	 * Only if the entity is alive.
+	 *
+	 * @param entity ID of the Entity to be changed
+	 * @param name Name that is to be set
+	 */
+	void SetEntityName(EntityId entity, const std::string& name)
+	{
+		if (!IsAlive(entity))
+			return;
+
+		entityRecords[entity].name = name;
+	}
 
 	/**
 	 * Adds a given Component to a given Entity,

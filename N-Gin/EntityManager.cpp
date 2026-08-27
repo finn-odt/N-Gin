@@ -27,7 +27,7 @@ EntityManager::EntityManager()
  *
  * @return The newly created unique EntityId of the added entity.
  */
-EntityId EntityManager::AddEntity()
+EntityId EntityManager::AddEntity(const std::string& name)
 {
 	EntityId id;
 
@@ -44,6 +44,7 @@ EntityId EntityManager::AddEntity()
 
 	EntityRecord& record = entityRecords[id];  // create entity record
 	record.alive = true;  // and set it alive
+	record.name = name;
 
 	// Put the new entity into the empty archetype: []
 	Archetype& emptyArchetype = archetypes[EMPTY_ARCHETYPE_ID];

@@ -9,7 +9,7 @@
 #include <Windows.h>
 #include <sstream>
 
-#define GRAVITY 9.81f
+#define GRAVITY -9.81f
 
 using EntityId = std::uint32_t;
 using ComponentId = uint16_t;
@@ -65,6 +65,8 @@ struct EntityRecord
     bool alive = false;
     ArchetypeId archetype = 0;
     size_t row = 0;  // index in archetype-entity-list
+
+    std::string name;
 };
 
 struct ArchetypeEdge

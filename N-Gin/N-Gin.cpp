@@ -23,8 +23,9 @@
 #include <D3DX11.h>
 #include <D3DX10.h>
 #include <DirectXMath.h>
+#include <map>
 
-#include "Components.h"
+#include "Components/Components.h"
 #include "EntityManager.h"
 #include "MeshManager.h"
 
@@ -43,14 +44,18 @@ using namespace DirectX;
 #define WINDOW_WIDTH 1200
 #define WINDOW_HEIGHT 750
 
-#define SCREEN_WIDTH 920
-#define SCREEN_HEIGHT 750
+constexpr int HIERARCHY_WIDTH = 280;
+constexpr int INSPECTOR_WIDTH = 280;
+constexpr int WINDOW_PADDING = 10;
 
 UINT renderWidth = 0;
 UINT renderHeight = 0;
 
 constexpr float MIN_NEAR_PLANE = 0.01f;
 constexpr float MIN_PLANE_GAP = 0.01f;
+
+constexpr float MIN_FOV_DEGREES = 1.0f;
+constexpr float MAX_FOV_DEGREES = 179.0f;
 
 struct Position;
 struct Rotation;
@@ -79,8 +84,20 @@ HWND editRotZ = nullptr;
 HWND editFov = nullptr;
 HWND editFar = nullptr;
 HWND editNear = nullptr;
+HWND inspectorObjectNameLabel = nullptr;
+HWND hierarchyList = nullptr;
+// for changing the background-color of these HWND in WndProc WM_CTLCOLORSTATIC
+std::vector<HWND> windowHeaderLabels;
+std::vector<HWND> noBackgroundLabels;
+constexpr COLORREF WINDOW_HEADER_BACKGROUNDCOLOR = RGB(190, 190, 190);
+constexpr COLORREF WINDOW_HEADER_TEXTCOLOR = RGB(0, 0, 0);
+HBRUSH windowHeaderBrush = CreateSolidBrush(WINDOW_HEADER_BACKGROUNDCOLOR);
+constexpr COLORREF INSPECTOR_BACKGROUNDCOLOR = RGB(255, 255, 255);
+HBRUSH inspectorBackgroundBrush = CreateSolidBrush(INSPECTOR_BACKGROUNDCOLOR);
 
-constexpr int INSPECTOR_WIDTH = 280;
+constexpr COLORREF HIERARCHY_SELECTED_BACKGROUNDCOLOR = RGB(90, 90, 90);
+constexpr COLORREF HIERARCHY_SELECTED_TEXTCOLOR = RGB(235, 235, 235);
+HBRUSH hierarchySelectedBrush = CreateSolidBrush(HIERARCHY_SELECTED_BACKGROUNDCOLOR);
 
 // 3D Stuff
 ID3D11Texture2D* depthStencilBuffer = nullptr;
@@ -111,7 +128,7 @@ void FixedUpdate(float fixedDeltaTime);
 void CleanD3D(void);
 bool InitGraphics(void);
 bool InitPipeline(void);  // setup shaders, const. buffers, ...
-void UpdateCameraInspector();
+void UpdateInspector();
 XMMATRIX GetWorldMatrix(const Transform& transform);
 XMMATRIX GetProjectionMatrix(const Camera& camera, float aspectRatio);
 
@@ -128,6 +145,9 @@ int previousMouseX = 0;
 constexpr int DRAG_THRESHOLD = 4;
 
 bool updatingInspector = false;
+
+EntityId selectedEntity = 0;  // default camera
+HWND selectedEntityLabel = nullptr;
 
 // CAMERA
 EntityId MainCamera;
@@ -180,41 +200,57 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,  // handler for the current wind
     auto previousTime = Clock::now();
     float accumulator = 0.0f;
 
-    while (true)
+
+    bool running = true;
+
+    while (running)
     {
         // PM_REMOVE = remove message from "mailbox"/queue
-	    if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
-	    {
-            TranslateMessage(&msg);  // open (& handle if necessary)
-            DispatchMessage(&msg);  // answer
-            if (msg.message == WM_QUIT)  // program was exited
-                break;
-	    } else  // GAME CODE (MAIN LOOP)
-	    {
-            auto currentTime = Clock::now();
 
-            std::chrono::duration<float> elapsedTime = currentTime - previousTime;
-            previousTime = currentTime;
-            float deltaTime = elapsedTime.count();
-
-            // Avoid huge deltaTime after debugging, resizing, dragging window, etc.
-            if (deltaTime > MAX_FRAME_TIME)
-                deltaTime = MAX_FRAME_TIME;
-
-            accumulator += deltaTime;
-
-            while (accumulator >= FIXED_DELTA_TIME)
+        // Process ALL currently pending Windows messages.
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)
             {
-                FixedUpdate(FIXED_DELTA_TIME);  // Physics Loop
-                accumulator -= FIXED_DELTA_TIME;
+                running = false;
+                break;
             }
 
-            Render();  // Game Loop
-	    }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+
+        if (!running)
+            break;
+
+        // -----------------------------
+        // GAME LOOP
+        // -----------------------------
+
+        auto currentTime = Clock::now();
+
+        std::chrono::duration<float> elapsedTime = currentTime - previousTime;
+        previousTime = currentTime;
+        float deltaTime = elapsedTime.count();
+
+        // Avoid huge deltaTime after debugging, resizing, dragging window, etc.
+        if (deltaTime > MAX_FRAME_TIME)
+            deltaTime = MAX_FRAME_TIME;
+
+        accumulator += deltaTime;
+
+        while (accumulator >= FIXED_DELTA_TIME)
+        {
+            FixedUpdate(FIXED_DELTA_TIME);  // Physics Loop
+            accumulator -= FIXED_DELTA_TIME;
+        }
+
+        Render();  // Game Loop
     }
+
     CleanD3D();
 
-    return (int) msg.wParam;
+    return static_cast<int>(msg.wParam);
 }
 
 float RandomFloat(float min, float max)  // both included
@@ -460,6 +496,52 @@ void FixedUpdate(float fixedDeltaTime) {
     // Physics goes here
     // Example:
     // position += velocity * fixedDeltaTime;
+
+    entityManager.ForEach<Transform, Physics>(
+		[&](EntityId entity, Transform& transform, Physics& physics)
+		{
+            constexpr float epsilon = 0.1f;
+
+			// Gravity
+            if (physics.useGravity)
+				physics.linearVelocity.y += GRAVITY * fixedDeltaTime;
+
+            // update position
+            XMVECTOR velocity = XMLoadFloat3(&physics.linearVelocity);
+            float speedSq = XMVectorGetX(XMVector3LengthSq(velocity));  // squared length to avoid sqrt()
+
+            if (speedSq > epsilon * epsilon)
+            {
+                XMVECTOR position = XMLoadFloat3(&transform.position);
+
+                position += velocity * fixedDeltaTime;
+
+                XMStoreFloat3(&transform.position, position);
+            }
+
+            // update rotation
+            XMVECTOR angVelocity = XMLoadFloat3(&physics.angularVelocity);
+            float angSpeed = XMVectorGetX(XMVector3Length(angVelocity));
+
+            if (angSpeed > epsilon * epsilon)
+            {
+                // Angular velocity direction = rotation axis
+                XMVECTOR axis = angVelocity / angSpeed;  // basically: normalize()
+
+                // radians/sec * sec = radians
+                float angle = angSpeed * fixedDeltaTime;
+
+                XMVECTOR deltaRotation = XMQuaternionRotationAxis(axis, angle);
+
+                XMVECTOR currentRotation = XMLoadFloat4(&transform.rotation);
+
+                XMVECTOR newRotation = XMQuaternionMultiply(currentRotation, deltaRotation);
+				newRotation = XMQuaternionNormalize(newRotation);
+
+                XMStoreFloat4( &transform.rotation, newRotation);
+            }
+		}
+    );
 }
 
 bool InitPipeline()  // CREATE SHADERS
@@ -614,9 +696,9 @@ bool InitPipeline()  // CREATE SHADERS
     return true;
 }
 
-void SpawnObject(MeshHandle handle, const Transform& transform)
+void SpawnObject(MeshHandle handle, const Transform& transform, const std::string& name = "Game Object")
 {
-    EntityId entity = entityManager.AddEntity();
+    EntityId entity = entityManager.AddEntity(name);
 
     entityManager.AddComponent(entity, transform);
 
@@ -632,7 +714,7 @@ void SpawnObject(MeshHandle handle, const Transform& transform)
 
 void AddCamera(void)
 {
-    EntityId cameraEntity = entityManager.AddEntity();
+    EntityId cameraEntity = entityManager.AddEntity((MainCameraInitialized ? "Camera" : "Main Camera"));
 
     Transform cameraTransform;
     cameraTransform.position = { 0.0f, 0.0f, -15.0f };
@@ -640,6 +722,8 @@ void AddCamera(void)
     entityManager.AddComponent(cameraEntity, cameraTransform);
 
     entityManager.AddComponent(cameraEntity, Camera{});
+
+    //entityManager.AddComponent(cameraEntity, Physics{});
 
     if (!MainCameraInitialized)
     {
@@ -674,7 +758,7 @@ bool InitGraphics()
                 );
                 transform.scale = { 1.0f, 1.0f, 1.0f };
 
-                SpawnObject(mesh, transform);
+                SpawnObject(mesh, transform, "Teddy " + std::to_string(i) + std::to_string(k));
             }
         }
 
@@ -800,6 +884,140 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
+std::map<std::string, HFONT> CreateFontDictionary(void)
+{
+    std::map<std::string, HFONT> output;
+    // FONT (for Labels of EDIT-fields)
+    output.try_emplace(
+        "edit-label",
+        CreateFontW(
+            15,                 // height in pixels
+            0, 0, 0,
+            FW_NORMAL,          // or FW_BOLD
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH,
+            L"Segoe UI"
+        )
+    );
+    // SMALL FONT
+    output.try_emplace(
+        "small-bold",
+        CreateFontW(
+            9,                 // height in pixels
+            0, 0, 0,
+            FW_BOLD,          // or FW_BOLD
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH,
+            L"Segoe UI"
+        )
+    );
+    // normal
+    output.try_emplace(
+        "normal",
+        CreateFontW(
+            18,                 // height in pixels
+            0, 0, 0,
+            FW_NORMAL,          // or FW_BOLD
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH,
+            L"Segoe UI"
+        )
+    );
+    // normal bold
+    output.try_emplace(
+        "normal-bold",
+        CreateFontW(
+            18,                 // height in pixels
+            0, 0, 0,
+            FW_BOLD,          // or FW_BOLD
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH,
+            L"Segoe UI"
+        )
+    );
+
+    return output;
+}
+
+/**
+ * Converts the given std:string to
+ * a std::wstring / wchar_t*.
+ * 
+ * @param str String that should be converted
+ * @return Input string as a wstring/wchar_t*
+ */
+std::wstring StringToWString(const std::string& str)
+{
+    if (str.empty())
+        return {};
+
+    int size = MultiByteToWideChar(
+        CP_UTF8,
+        0,
+        str.c_str(),
+        static_cast<int>(str.size()),
+        nullptr,
+        0
+    );
+
+    std::wstring result(size, L'\0');
+
+    MultiByteToWideChar(
+        CP_UTF8,
+        0,
+        str.c_str(),
+        static_cast<int>(str.size()),
+        result.data(),
+        size
+    );
+
+    return result;
+}
+
+void UpdateHierarchy()
+{
+    SendMessageW(hierarchyList, LB_RESETCONTENT, 0, 0);
+
+    entityManager.ForEach<Transform>(
+        [&](EntityId entity, Transform& transform)
+        {
+            std::wstring name = StringToWString(entityManager.GetEntityName(entity));
+
+            LRESULT index = SendMessageW(
+                hierarchyList,
+                LB_ADDSTRING,
+                0,
+                reinterpret_cast<LPARAM>(name.c_str())
+            );
+
+            // Associate this row with its EntityId
+            SendMessageW(
+                hierarchyList,
+                LB_SETITEMDATA,
+                index,
+                static_cast<LPARAM>(entity)
+            );
+        }
+    );
+}
+
+
 #define IDC_POSITION_X 1001
 #define IDC_POSITION_Y 1002
 #define IDC_POSITION_Z 1003
@@ -810,6 +1028,8 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 #define IDC_FOV        1010
 #define IDC_NEAR_PLANE 1011
 #define IDC_FAR_PLANE  1012
+
+#define IDC_HIERARCHY 1100
 
 //
 //   FUNKTION: InitInstance(HINSTANCE, int)
@@ -855,28 +1075,20 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     int width = clientRect.right;
     int height = clientRect.bottom;
 
-    int viewportWidth = width - INSPECTOR_WIDTH;
+    int viewportWidth = width - HIERARCHY_WIDTH - INSPECTOR_WIDTH;
 
-    HFONT inspectorFont = CreateFontW(
-        15,                 // height in pixels
-        0, 0, 0,
-        FW_NORMAL,          // or FW_BOLD
-        FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH,
-        L"Segoe UI"
-    );
+    auto fontDict = CreateFontDictionary();  // dictionary with fonts like "small", "edit-label"
 
-    // LEFT: DirectX viewport
+    int viewportX = HIERARCHY_WIDTH + WINDOW_PADDING;
+    int inspectorX = viewportX + viewportWidth + WINDOW_PADDING;
+
+    // MIDDLE: DirectX viewport
     viewportWnd = CreateWindowExW(
         0,
         L"STATIC",
         nullptr,
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-        0,
+        viewportX,  // offset by width of Hierarchy-Window
         0,
         viewportWidth,
         height,
@@ -886,88 +1098,102 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         nullptr
     );
 
+    // LEFT: Hierarchy
+    HWND hierarchyLabel = CreateWindowW(L"STATIC", L" HIERARCHY", WS_CHILD | WS_VISIBLE, 0, 0, 45, 10, hWnd, nullptr, hInstance, nullptr);
+    windowHeaderLabels.push_back(hierarchyLabel);
+    SendMessageW(hierarchyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["small-bold"]), TRUE);  // SMALL BOLD font
+
+    hierarchyList = CreateWindowW(
+        L"LISTBOX",
+        nullptr,
+        WS_CHILD |
+        WS_VISIBLE |
+        WS_VSCROLL |
+        WS_BORDER |
+        LBS_NOTIFY |
+        LBS_NOINTEGRALHEIGHT,
+        10,                         // x
+        20,                         // y
+        HIERARCHY_WIDTH - 20,       // width
+        height - 30,                // height
+        hWnd,
+        reinterpret_cast<HMENU>(IDC_HIERARCHY),
+        hInstance,
+        nullptr
+    );
+    // is populated later, when InitD3D created GameObjects
+
     // RIGHT: Inspector
-    int inspectorX = viewportWidth + 15;
+    HWND inspectorLabel = CreateWindowW(L"STATIC", L" INSPECTOR", WS_CHILD | WS_VISIBLE, inspectorX - WINDOW_PADDING, 0, 45, 10, hWnd, nullptr, hInstance, nullptr);
+    windowHeaderLabels.push_back(inspectorLabel);
+    SendMessageW(inspectorLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["small-bold"]), TRUE);  // SMALL BOLD font
 
-    CreateWindowW(L"STATIC", L"CAMERA", WS_CHILD | WS_VISIBLE, inspectorX, 15, 200, 25, hWnd, nullptr, hInstance, nullptr);
+    inspectorObjectNameLabel = CreateWindowW(L"STATIC", L"Main Camera", WS_CHILD | WS_VISIBLE, inspectorX, 15, 200, 25, hWnd, nullptr, hInstance, nullptr);
+    noBackgroundLabels.push_back(inspectorObjectNameLabel);
+    SendMessageW(inspectorObjectNameLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["normal-bold"]), TRUE);  // NORMAL BOLD font
 
-    CreateWindowW(L"STATIC", L"Transform", WS_CHILD | WS_VISIBLE, inspectorX + 10, 55, 200, 20, hWnd, nullptr, hInstance, nullptr);
+    HWND componentNameLabel = CreateWindowW(L"STATIC", L"Transform", WS_CHILD | WS_VISIBLE, inspectorX + 10, 55, 200, 20, hWnd, nullptr, hInstance, nullptr);
+    noBackgroundLabels.push_back(componentNameLabel);
 
     // X POSITION
-    HWND positionXLabel = 
-        CreateWindowW(L"STATIC", L"Position X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 90, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(positionXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND positionXLabel = CreateWindowW(L"STATIC", L"Position X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 90, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // EDIT-Label font
 
-    editPosX = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 87, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_X), hInstance, nullptr);
+    editPosX = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 87, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_X), hInstance, nullptr);
 
     // Y POSITION
-    HWND positionYLabel = 
-        CreateWindowW(L"STATIC", L"Position Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 115, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(positionYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND positionYLabel = CreateWindowW(L"STATIC", L"Position Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 115, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editPosY = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 112, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Y), hInstance, nullptr);
+    editPosY = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 112, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Y), hInstance, nullptr);
     
     // Z POSITION
-    HWND positionZLabel = 
-        CreateWindowW(L"STATIC", L"Position Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 140, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(positionZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND positionZLabel = CreateWindowW(L"STATIC", L"Position Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 140, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(positionZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editPosZ = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 137, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Z), hInstance, nullptr);
+    editPosZ = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 137, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_POSITION_Z), hInstance, nullptr);
 
 
     // X ROTATION
-    HWND rotationXLabel =
-        CreateWindowW(L"STATIC", L"Rotation X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 170, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(rotationXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND rotationXLabel = CreateWindowW(L"STATIC", L"Rotation X", WS_CHILD | WS_VISIBLE, inspectorX + 20, 170, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationXLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editRotX =
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 167, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_X), hInstance, nullptr);
+    editRotX = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 167, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_X), hInstance, nullptr);
 
     // Y ROTATION
-    HWND rotationYLabel =
-        CreateWindowW(L"STATIC", L"Rotation Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 195, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(rotationYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND rotationYLabel = CreateWindowW(L"STATIC", L"Rotation Y", WS_CHILD | WS_VISIBLE, inspectorX + 20, 195, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationYLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
     editRotY =
         CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 192, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_Y), hInstance, nullptr);
 
     // Z ROTATION
-    HWND rotationZLabel =
-        CreateWindowW(L"STATIC", L"Rotation Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 220, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(rotationZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND rotationZLabel = CreateWindowW(L"STATIC", L"Rotation Z", WS_CHILD | WS_VISIBLE, inspectorX + 20, 220, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(rotationZLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editRotZ =
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 217, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_Z), hInstance, nullptr);
+    editRotZ = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 217, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_ROTATION_Z), hInstance, nullptr);
 
 
-    CreateWindowW(L"STATIC", L"Camera", WS_CHILD | WS_VISIBLE, inspectorX + 10, 250, 200, 20, hWnd, nullptr, hInstance, nullptr);
+    componentNameLabel = CreateWindowW(L"STATIC", L"Camera", WS_CHILD | WS_VISIBLE, inspectorX + 10, 250, 200, 20, hWnd, nullptr, hInstance, nullptr);
+    noBackgroundLabels.push_back(componentNameLabel);
 
     // FOV
-    HWND camFovLabel = 
-        CreateWindowW(L"STATIC", L"FOV", WS_CHILD | WS_VISIBLE, inspectorX + 20, 275, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(camFovLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND camFovLabel = CreateWindowW(L"STATIC", L"FOV", WS_CHILD | WS_VISIBLE, inspectorX + 20, 275, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camFovLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editFov = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 272, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FOV), hInstance, nullptr);
+    editFov = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 272, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FOV), hInstance, nullptr);
 
     // Near Plane
-    HWND camNearLabel = 
-        CreateWindowW(L"STATIC", L"Near Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 300, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(camNearLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND camNearLabel = CreateWindowW(L"STATIC", L"Near Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 300, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camNearLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editNear = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 297, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_NEAR_PLANE), hInstance, nullptr);
+    editNear = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 297, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_NEAR_PLANE), hInstance, nullptr);
 
     // Far Plane
-    HWND camFarLabel = 
-        CreateWindowW(L"STATIC", L"Far Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 325, 70, 20, hWnd, nullptr, hInstance, nullptr);
-    SendMessageW(camFarLabel, WM_SETFONT, reinterpret_cast<WPARAM>(inspectorFont), TRUE);  // change font
+    HWND camFarLabel = CreateWindowW(L"STATIC", L"Far Plane", WS_CHILD | WS_VISIBLE, inspectorX + 20, 325, 70, 20, hWnd, nullptr, hInstance, nullptr);
+    SendMessageW(camFarLabel, WM_SETFONT, reinterpret_cast<WPARAM>(fontDict["edit-label"]), TRUE);  // change font
 
-    editFar = 
-        CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 322, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FAR_PLANE), hInstance, nullptr);
+    editFar = CreateWindowW(L"EDIT", L"0.0", WS_CHILD | WS_VISIBLE | WS_BORDER, inspectorX + 100, 322, 140, 24, hWnd, reinterpret_cast<HMENU>(IDC_FAR_PLANE), hInstance, nullptr);
 	
     SetWindowSubclass(editPosX, EditSubclassProc, 0, 0);
     SetWindowSubclass(editPosY, EditSubclassProc, 0, 0);
@@ -993,8 +1219,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         return FALSE;
     }
 	
-	// MainCamera exists now
-    UpdateCameraInspector();
+	// MainCamera and Game Objects exist now
+    UpdateInspector();
+    UpdateHierarchy();
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
@@ -1048,19 +1275,22 @@ XMVECTOR EulerDegreesToQuaternion(const XMFLOAT3& eulerRotation)
     return quaternion;
 }
 
-void UpdateCameraInspector()
+void UpdateInspector()
 {
     if (!MainCameraInitialized)
         return;
 
-    Transform* transform = entityManager.GetComponent<Transform>(MainCamera);
-
-    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
-
-    if (!transform || !camera)
-        return;
-
     updatingInspector = true;
+
+    std::wstring selectedObject = StringToWString(entityManager.GetEntityName(selectedEntity));
+    SetWindowTextW(inspectorObjectNameLabel, selectedObject.c_str());
+
+    Transform* transform = entityManager.GetComponent<Transform>(selectedEntity);
+
+    if (!transform) {
+        updatingInspector = false;
+        return;
+    }
 
     wchar_t buffer[64];
 
@@ -1092,18 +1322,37 @@ void UpdateCameraInspector()
     swprintf_s(buffer, L"%.2f", rotation.z);
     SetWindowTextW(editRotZ, buffer);
 
+    if (MainCamera != selectedEntity)
+    {
+        EnableWindow(editFov, FALSE);
+        EnableWindow(editNear, FALSE);
+        EnableWindow(editFar, FALSE);
+        updatingInspector = false;
+        return;
+    }
+    EnableWindow(editFov, TRUE);
+    EnableWindow(editNear, TRUE);
+    EnableWindow(editFar, TRUE);
 
-    // FOV: radians -> degrees for inspector
-    swprintf_s(buffer,L"%.2f", XMConvertToDegrees(camera->fov));
-    SetWindowTextW(editFov, buffer);
+    if (MainCamera == selectedEntity) {
+        Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+        if (!camera) {
+            updatingInspector = false;
+            return;
+        }
 
-    // Near plane
-    swprintf_s(buffer, L"%.2f", camera->nearPlane);
-    SetWindowTextW(editNear, buffer);
+        // FOV: radians -> degrees for inspector
+        swprintf_s(buffer, L"%.2f", XMConvertToDegrees(camera->fov));
+        SetWindowTextW(editFov, buffer);
 
-    // Far plane
-    swprintf_s(buffer, L"%.2f", camera->farPlane);
-    SetWindowTextW(editFar, buffer);
+        // Near plane
+        swprintf_s(buffer, L"%.2f", camera->nearPlane);
+        SetWindowTextW(editNear, buffer);
+
+        // Far plane
+        swprintf_s(buffer, L"%.2f", camera->farPlane);
+        SetWindowTextW(editFar, buffer);
+    }
 
     updatingInspector = false;
 }
@@ -1142,6 +1391,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		            return 0;
 	        }
 
+            // --------------------------------------------------------
+            // HIERARCHY
+            // ----
+
+            if (controlId == IDC_HIERARCHY && notification == LBN_SELCHANGE)
+            {
+                int index = static_cast<int>(
+                    SendMessageW(
+                        hierarchyList,
+                        LB_GETCURSEL,
+                        0,
+                        0
+                    )
+                );
+
+                if (index != LB_ERR)
+                {
+                    EntityId entity =
+                        static_cast<EntityId>(
+                            SendMessageW(
+                                hierarchyList,
+                                LB_GETITEMDATA,
+                                index,
+                                0
+                            )
+                            );
+
+                    selectedEntity = entity;
+
+                    UpdateInspector();
+                }
+
+                return 0;
+            }
+
 	        // --------------------------------------------------------
 	        // INSPECTOR INPUT
 	        // --------------------------------------------------------
@@ -1150,13 +1434,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	        {
 	            HWND control = reinterpret_cast<HWND>(lParam);
 
-	            Transform* transform =
-	                entityManager.GetComponent<Transform>(MainCamera);
+	            Transform* transform = entityManager.GetComponent<Transform>(selectedEntity);
 
-	            Camera* camera =
-	                entityManager.GetComponent<Camera>(MainCamera);
-
-	            if (!transform || !camera)
+	            if (!transform)
 	                return 0;
 
 	            wchar_t text[64]{};
@@ -1220,25 +1500,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	            // ----------------------------------------------------
 	            // CAMERA
 	            // ----------------------------------------------------
+                if (MainCamera == selectedEntity) {
+                    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+                    if (!camera)
+                        break;
 
-	            else if (control == editFov)
-	            {
-	                // Inspector uses degrees,
-	                // Camera component stores radians
-	                camera->fov = XMConvertToRadians(value);
-	            }
-	            else if (control == editNear)
-	            {
-	                // Near plane must be positive
-	                if (value > MIN_NEAR_PLANE && value < camera->farPlane - MIN_PLANE_GAP)
-	                    camera->nearPlane = value;
-	            }
-	            else if (control == editFar)
-	            {
-	                // Far plane must be beyond near plane
-	                if (value > camera->nearPlane + MIN_PLANE_GAP)
-	                    camera->farPlane = value;
-	            }
+                    if (control == editFov)
+                    {
+                        // Inspector uses degrees, Camera component stores radians
+                        value = std::clamp(
+                            value,
+                            MIN_FOV_DEGREES,
+                            MAX_FOV_DEGREES
+                        );
+
+                        camera->fov = XMConvertToRadians(value);
+                    }
+                    else if (control == editNear)
+                    {
+                        // Near plane must be positive
+                        if (value > MIN_NEAR_PLANE && value < camera->farPlane - MIN_PLANE_GAP)
+                            camera->nearPlane = value;
+                    }
+                    else if (control == editFar)
+                    {
+                        // Far plane must be beyond near plane
+                        if (value > camera->nearPlane + MIN_PLANE_GAP)
+                            camera->farPlane = value;
+                    }
+                }
 	        }
 
 	        return 0;
@@ -1256,6 +1546,60 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 	        return 0;
 	    }
+
+        case WM_CTLCOLORSTATIC:
+        {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            HWND control = reinterpret_cast<HWND>(lParam);
+
+            if (control == inspectorObjectNameLabel)
+            {
+                SetTextColor(hdc, RGB(0, 0, 0));
+                SetBkColor(hdc,INSPECTOR_BACKGROUNDCOLOR);
+
+                return reinterpret_cast<LRESULT>(inspectorBackgroundBrush);
+            } 
+            if (control == selectedEntityLabel)
+            {
+                SetTextColor(hdc, HIERARCHY_SELECTED_TEXTCOLOR);
+                SetBkColor(hdc, HIERARCHY_SELECTED_BACKGROUNDCOLOR);
+
+                return reinterpret_cast<LRESULT>(hierarchySelectedBrush);
+            }
+
+            // was one of the stored windows called for redraw?
+            auto it = std::find(
+                windowHeaderLabels.begin(),
+                windowHeaderLabels.end(),
+                control
+            );
+
+            if (it != windowHeaderLabels.end())
+            {
+                SetBkColor(hdc, WINDOW_HEADER_BACKGROUNDCOLOR);
+                SetTextColor(hdc, WINDOW_HEADER_TEXTCOLOR);
+
+                // change brush of this label/hwnd to change background color
+
+                return reinterpret_cast<LRESULT>(windowHeaderBrush);
+            }
+
+            it = std::find(
+                noBackgroundLabels.begin(),
+                noBackgroundLabels.end(),
+                control
+            );
+
+            if (it != noBackgroundLabels.end())
+            {
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, RGB(0, 0, 0));
+
+                return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+            }
+
+            break;
+        }
 
 	    case WM_DESTROY:
 	    {
@@ -1287,12 +1631,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData)
 {
     if (!MainCameraInitialized)
-        return DefSubclassProc(
-            hwnd,
-            message,
-            wParam,
-            lParam
-        );
+        return DefSubclassProc(hwnd, message, wParam, lParam);
 
     switch (message)
     {
@@ -1337,11 +1676,9 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 
                 if (deltaX != 0)
                 {
-                    Transform* transform = entityManager.GetComponent<Transform>(MainCamera);
+                    Transform* transform = entityManager.GetComponent<Transform>(selectedEntity);
 
-                    Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
-
-                    if (!transform || !camera)
+                    if (!transform)
                         break;
 
                     float sensitivity = 0.1f;  // TODO: GLOBAL VARIABLE
@@ -1380,35 +1717,50 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 
                         XMStoreFloat4(&transform->rotation, quaternion);
                     }
-                    else if (hwnd == editFov)
-                        camera->fov += XMConvertToRadians(change);
-                    else if (hwnd == editNear)
-                    {
-                        float newNearPlane = camera->nearPlane + change;
 
-                        // > MIN_NEAR_PLANE && < FAR-PLANE
-                        newNearPlane = std::clamp(
-                            newNearPlane,
-                            MIN_NEAR_PLANE,
-                            camera->farPlane - MIN_PLANE_GAP
-                        );
+                    if (MainCamera == selectedEntity) {
+                        Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
+                        if (!camera)
+                            break;
 
-                        camera->nearPlane = newNearPlane;
+                        if (hwnd == editFov)
+                        {
+                            float newFov = camera->fov + XMConvertToRadians(change);
+
+                            camera->fov = std::clamp(
+                                newFov,
+                                XMConvertToRadians(MIN_FOV_DEGREES),
+                                XMConvertToRadians(MAX_FOV_DEGREES)
+                            );
+                        }
+                        else if (hwnd == editNear)
+                        {
+                            float newNearPlane = camera->nearPlane + change;
+
+                            // > MIN_NEAR_PLANE && < FAR-PLANE
+                            newNearPlane = std::clamp(
+                                newNearPlane,
+                                MIN_NEAR_PLANE,
+                                camera->farPlane - MIN_PLANE_GAP
+                            );
+
+                            camera->nearPlane = newNearPlane;
+                        }
+                        else if (hwnd == editFar)
+                        {
+                            float newFarPlane = camera->farPlane + change;
+
+                            // >= Near-Plane
+                            newFarPlane = std::max<float>(
+                                newFarPlane,
+                                camera->nearPlane + MIN_PLANE_GAP
+                            );
+
+                            camera->farPlane = newFarPlane;
+                        }
                     }
-                    else if (hwnd == editFar)
-                    {
-                        float newFarPlane = camera->farPlane + change;
 
-                        // >= Near-Plane
-                        newFarPlane = std::max<float>(
-                            newFarPlane,
-                            camera->nearPlane + MIN_PLANE_GAP
-                        );
-
-                        camera->farPlane = newFarPlane;
-                    }
-
-                    UpdateCameraInspector();
+                    UpdateInspector();
 
                     previousMouseX = mouse.x;
                 }
@@ -1484,11 +1836,19 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         case WM_CAPTURECHANGED:
         case WM_CANCELMODE:
         {
-            editMouseDown = false;
-            editDragging = false;
-            draggedEdit = nullptr;
+            // else you get problems, that the whole process
+            // freezes directly after starting to drag
+            if (draggedEdit == hwnd)  // only cancel if the message came from the dragged window
+            {
+                editMouseDown = false;
+                editDragging = false;
+                draggedEdit = nullptr;
 
-            break;
+                if (message == WM_CANCELMODE && GetCapture() == hwnd)
+                    ReleaseCapture();
+            }
+
+            return DefSubclassProc(hwnd, message, wParam, lParam);
         }
     }
 

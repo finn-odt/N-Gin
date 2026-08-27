@@ -9,7 +9,7 @@
 #include <wrl/client.h>
 #include <DirectXMath.h>
 
-#include "Components.h"
+#include "Components/Components.h"
 
 #include "ufbx.h"  // FBX Library
 
