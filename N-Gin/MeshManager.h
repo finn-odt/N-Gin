@@ -8,16 +8,19 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <DirectXMath.h>
+#include <DirectXCollision.h>
 
 #include "Components/Components.h"
 
 #include "ufbx.h"  // FBX Library
 
+using namespace DirectX;
+
 struct Vertex
 {
-	DirectX::XMFLOAT3 position;
-	DirectX::XMFLOAT3 normal;
-	DirectX::XMFLOAT2 texCoord;
+	XMFLOAT3 position;
+	XMFLOAT3 normal;
+	XMFLOAT2 texCoord;
 };
 
 struct CpuMeshData
@@ -34,6 +37,15 @@ struct Mesh
 	uint32_t vertexCount = 0;
 	uint32_t indexCount = 0;
 	uint32_t stride = sizeof(Vertex);
+
+	struct WorldBounds
+	{
+		BoundingBox box;
+		bool dirty = true;
+	};
+
+	BoundingBox localBounds;
+	WorldBounds worldBounds;
 };
 
 
@@ -53,6 +65,7 @@ public:
     MeshHandle CreateMesh(const std::vector<Vertex>& vertices);
 
 	MeshHandle LoadMesh(const std::string& path);
+	BoundingBox GetBoundingBoxForMesh(const std::vector<Vertex>& vertices);
 
     const Mesh& GetMesh(MeshHandle handle) const;
 };

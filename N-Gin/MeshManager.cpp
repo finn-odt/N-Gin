@@ -26,6 +26,38 @@ MeshHandle MeshManager::CreateMesh(const std::vector<Vertex>& vertices)
 	return CreateMeshFromCpuData(data);
 }
 
+BoundingBox MeshManager::GetBoundingBoxForMesh(const std::vector<Vertex>& vertices)
+{
+	XMFLOAT3 minPoint{ FLT_MAX, FLT_MAX, FLT_MAX };  // init: biggest values possible
+	XMFLOAT3 maxPoint{ -FLT_MAX, -FLT_MAX, -FLT_MAX };  // init: smallest values possible
+
+	// search maxima and minima of every axis in all vertices
+	for (const Vertex& vertex : vertices)
+	{
+		minPoint.x = std::min<float>(minPoint.x, vertex.position.x);
+		minPoint.y = std::min<float>(minPoint.y, vertex.position.y);
+		minPoint.z = std::min<float>(minPoint.z, vertex.position.z);
+
+		maxPoint.x = std::max<float>(maxPoint.x, vertex.position.x);
+		maxPoint.y = std::max<float>(maxPoint.y, vertex.position.y);
+		maxPoint.z = std::max<float>(maxPoint.z, vertex.position.z);
+	}
+
+	XMFLOAT3 center{
+	(minPoint.x + maxPoint.x) * 0.5f,
+	(minPoint.y + maxPoint.y) * 0.5f,
+	(minPoint.z + maxPoint.z) * 0.5f
+	};
+
+	XMFLOAT3 extents{  // from the center (so like a radius)
+		(maxPoint.x - minPoint.x) * 0.5f,
+		(maxPoint.y - minPoint.y) * 0.5f,
+		(maxPoint.z - minPoint.z) * 0.5f
+	};
+
+	return { center, extents };
+}
+
 MeshHandle MeshManager::CreateMeshFromCpuData(const CpuMeshData& data)
 {
 	if (!device)
@@ -38,6 +70,7 @@ MeshHandle MeshManager::CreateMeshFromCpuData(const CpuMeshData& data)
 	mesh.vertexCount = static_cast<uint32_t>(data.vertices.size());
 	mesh.indexCount = static_cast<uint32_t>(data.indices.size());
 	mesh.stride = sizeof(Vertex);
+	mesh.localBounds = GetBoundingBoxForMesh(data.vertices);  // create Bounding Box
 
 	D3D11_BUFFER_DESC vertexBufferDesc = {};
 	vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;

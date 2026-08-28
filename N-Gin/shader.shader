@@ -21,9 +21,21 @@ u0, u1, ...   unordered access views
 
 cbuffer MatrixBuffer : register(b0)
 {
-    matrix world;
     matrix view;
     matrix projection;
+};
+
+struct VIn {
+    // input slot 0 (per vertex)
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+    float2 texCoord : TEXCOORD0;
+    
+    // input slot 1 (per instance)
+    float4 world0 : INSTANCEWORLD0;
+    float4 world1 : INSTANCEWORLD1;
+    float4 world2 : INSTANCEWORLD2;
+    float4 world3 : INSTANCEWORLD3;
 };
 
 struct VOut
@@ -33,11 +45,20 @@ struct VOut
     float2 texCoord : TEXCOORD0;
 };
 
-VOut VS(float3 position : POSITION, float3 normal : NORMAL, float2 texCoord : TEXCOORD0)
+// Vertex Shader
+VOut VS(VIn input)
 {
     VOut output;
 
-    float4 p = float4(position, 1.0f);  // 3D to 4D: for homogeneous matrix multiplication
+    // Reconstruct this entity's world matrix from the instance buffer.
+    float4x4 world = float4x4(
+        input.world0,
+        input.world1,
+        input.world2,
+        input.world3
+    );
+
+    float4 p = float4(input.position, 1.0f);  // 3D to 4D: for homogeneous matrix multiplication
 
     p = mul(p, world);  // local -> world space
     p = mul(p, view);  // world -> view/camera space
@@ -45,16 +66,17 @@ VOut VS(float3 position : POSITION, float3 normal : NORMAL, float2 texCoord : TE
 
     output.position = p;
 
-    // make the normal follow the object's rotation
+    // rotate normal into world space
     output.normal = normalize(
-        mul(normal, (float3x3)world)
+        mul(input.normal, (float3x3)world)
     );
 
-    output.texCoord = texCoord;
+    output.texCoord = input.texCoord;
 
     return output;
 }
 
+// Pixel/Fragment Shader
 float4 PS(VOut input) : SV_TARGET
 {
     float3 normal = normalize(input.normal);

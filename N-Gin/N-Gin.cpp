@@ -107,18 +107,59 @@ XMMATRIX world;
 XMMATRIX view;
 XMMATRIX projection;
 
-struct MatrixBufferData  // needs to correspond to the Data Structure in the Shader
+struct CameraBufferData  // needs to correspond to the Data Structure in the Shader
 {
-    XMMATRIX world;
     XMMATRIX view;
     XMMATRIX projection;
+};
+
+struct InstanceData
+{
+    XMFLOAT4X4 world;  // data that changes between instances
+};
+
+struct RenderBatch
+{
+    MeshHandle mesh;
+    MaterialHandle material = INVALID_MATERIAL;
+
+    std::vector<InstanceData> instances;
+};
+
+struct RenderBatchKey
+{
+    MeshHandle mesh;
+    MaterialHandle material;
+
+    bool operator==(const RenderBatchKey& other) const
+    {
+        return mesh == other.mesh && material == other.material;
+    }
+};
+
+struct RenderBatchKeyHash
+{
+    size_t operator()(const RenderBatchKey& key) const
+    {
+        size_t h1 = std::hash<MeshHandle>{}(key.mesh);
+        size_t h2 = std::hash<MaterialHandle>{}(key.material);
+
+        return h1 ^ (h2 << 1);
+    }
 };
 
 // Shader
 ID3D11InputLayout* layout;
 ID3D11PixelShader* pixelShader;
 ID3D11VertexShader* vertexShader;
-ID3D11Buffer* matrixBuffer = nullptr;
+ID3D11Buffer* cameraBuffer = nullptr;
+
+// Instancing (one draw call per mesh)
+ID3D11Buffer* instanceBuffer = nullptr;
+uint32_t instanceBufferCapacity = 0;
+
+std::vector<RenderBatch> renderBatches;
+std::unordered_map<RenderBatchKey, size_t, RenderBatchKeyHash> renderBatchLookup;
 
 // FORWARD METHOD DECLARATIONS
 
@@ -128,6 +169,10 @@ void FixedUpdate(float fixedDeltaTime);
 void CleanD3D(void);
 bool InitGraphics(void);
 bool InitPipeline(void);  // setup shaders, const. buffers, ...
+
+bool CreateInstanceBuffer(uint32_t capacity);
+
+RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material);
 void UpdateInspector();
 XMMATRIX GetWorldMatrix(const Transform& transform);
 XMMATRIX GetProjectionMatrix(const Camera& camera, float aspectRatio);
@@ -366,6 +411,8 @@ bool InitD3D(HWND Hwnd)
     if (!InitGraphics())  // drawing setup
         return false;
 
+    CreateInstanceBuffer(1024);
+
     return true;
 }
 
@@ -374,6 +421,11 @@ void Render(void)
     // do not draw on old frame:
     devcon->ClearRenderTargetView(backBuffer, BASE_COLOR);
     devcon->ClearDepthStencilView(depthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+	// clear render batches (of instances)
+    for (RenderBatch& batch : renderBatches)
+    {
+        batch.instances.clear();
+    }
 
     if (!MainCameraInitialized)
     {
@@ -401,27 +453,53 @@ void Render(void)
 
     XMVECTOR target = XMVectorAdd(position, forward);
 
-    XMMATRIX view = XMMatrixLookAtLH(  // View Matrix
-        position,
-        target,
-        up
-    );
+    XMMATRIX view = XMMatrixLookAtLH(position, target, up);
 
     float aspect = static_cast<float>(renderWidth) / static_cast<float>(renderHeight);
 
     projection = GetProjectionMatrix(*camera, aspect);
+
+    // Construct View Frustum once per render
+    BoundingFrustum cameraFrustum;
+    BoundingFrustum::CreateFromMatrix(cameraFrustum, projection);
+    XMMATRIX inverseView = XMMatrixInverse(nullptr, view);
+    BoundingFrustum worldFrustum;
+    cameraFrustum.Transform(worldFrustum, inverseView);
 
     // Pipeline state shared by all mesh objects
     devcon->IASetPrimitiveTopology(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
     );
     
+    // Create and populate Camera Data Buffer (View & Projection Matrix)
     devcon->VSSetConstantBuffers(  // b0 = MatrixBuffer in HLSL
         0,
         1,
-        &matrixBuffer
+        &cameraBuffer
     );
 
+    D3D11_MAPPED_SUBRESOURCE mappedResource{};
+
+    HRESULT hr = devcon->Map(
+        cameraBuffer,
+        0,
+        D3D11_MAP_WRITE_DISCARD,
+        0,
+        &mappedResource
+    );
+
+    if (FAILED(hr))
+        return;
+
+    CameraBufferData* cameraData = static_cast<CameraBufferData*>(mappedResource.pData);
+
+    cameraData->view = XMMatrixTranspose(view);
+
+    cameraData->projection = XMMatrixTranspose(projection);
+
+    devcon->Unmap(cameraBuffer, 0);
+
+    // Render all Entities with a MeshRenderer
     entityManager.ForEach<Transform, MeshRenderer>(
         [&](EntityId entity, Transform& transform,MeshRenderer& renderer)
         {
@@ -437,56 +515,92 @@ void Render(void)
             // 2. World matrix comes from THIS entity's transform
             XMMATRIX world = GetWorldMatrix(transform);
 
-            // 3. Upload this entity's W/V/P
-            D3D11_MAPPED_SUBRESOURCE mappedResource{};
+            // VIEW FRUSTUM CULLING
+            Mesh::WorldBounds worldBounds = mesh.worldBounds;  // we need a world space bounding box (saved: local)
+            
+        	mesh.localBounds.Transform(worldBounds.box, world);  // could be optimized with a dirty-flag
 
-            HRESULT hr = devcon->Map(
-                matrixBuffer,
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                &mappedResource
-            );
+            if (worldFrustum.Contains(worldBounds.box) == DISJOINT)
+                return;  // CULL OBJECT [DISJOINT = completely outside]
 
-            if (FAILED(hr))
-                return;
+			// find the appropriate render batch for this mesh-material-combination
+            RenderBatch& batch = GetOrCreateRenderBatch(renderer.mesh, renderer.material);
 
-            MatrixBufferData* matrixData = static_cast<MatrixBufferData*>(mappedResource.pData);
+            // add instance to list/vector
+            InstanceData instance{};
 
-            matrixData->world = XMMatrixTranspose(world);
+            XMStoreFloat4x4(&instance.world, world);
 
-            matrixData->view = XMMatrixTranspose(view);
-
-            matrixData->projection = XMMatrixTranspose(projection);
-
-            devcon->Unmap(matrixBuffer, 0);
-
-            // 4. Bind THIS entity's mesh
-
-            UINT stride = mesh.stride;
-            UINT offset = 0;
-
-            ID3D11Buffer* vertexBuffer = mesh.vertexBuffer.Get();
-
-            devcon->IASetVertexBuffers(  // vertex buffer
-                0,
-                1,
-                &vertexBuffer,
-                &stride,
-                &offset
-            );
-
-            devcon->IASetIndexBuffer(  // index buffer (for vertices)
-                mesh.indexBuffer.Get(),
-                DXGI_FORMAT_R32_UINT,
-                0
-            );
-
-
-            // 5. Draw THIS entity
-            devcon->DrawIndexed(mesh.indexCount,0,0);
+            // no rendering per MeshRenderer, only list-setup
+            batch.instances.push_back(instance);
         }
     );
+
+    for (RenderBatch& batch : renderBatches)
+    {
+        if (batch.instances.empty())
+            continue;
+
+        // get mesh of this batch
+        const Mesh& mesh = meshManager->GetMesh(batch.mesh);
+
+        // how many instances are there?
+        const UINT instanceCount = static_cast<UINT>(batch.instances.size());
+
+        // upload instance data into instanceBuffer
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        HRESULT hr = devcon->Map(
+            instanceBuffer,
+            0,
+            D3D11_MAP_WRITE_DISCARD,
+            0,
+            &mapped
+        );
+
+        if (FAILED(hr))
+            continue;
+
+        // copy the instance vector into the gpu buffer
+        memcpy(mapped.pData, batch.instances.data(), sizeof(InstanceData) * instanceCount);
+
+        devcon->Unmap(instanceBuffer, 0);
+
+        // bind vertexBuffer and indexBuffer
+        ID3D11Buffer* buffers[] =
+        {
+            mesh.vertexBuffer.Get(),
+            instanceBuffer
+        };
+
+        UINT strides[] = { mesh.stride, sizeof(InstanceData) };
+
+        UINT offsets[] = { 0, 0 };
+
+        devcon->IASetVertexBuffers(
+            0,
+            2,
+            buffers,
+            strides,
+            offsets
+        );
+
+        devcon->IASetIndexBuffer(
+            mesh.indexBuffer.Get(),
+            DXGI_FORMAT_R32_UINT,
+            0
+        );
+
+        // TODO: BindMaterial(batch.material);
+
+        // draw
+        devcon->DrawIndexedInstanced(
+            mesh.indexCount,
+            instanceCount,
+            0,
+            0,
+            0
+        );
+    }
 
     // Show finished frame
     swapchain->Present(0,0);
@@ -628,6 +742,9 @@ bool InitPipeline()  // CREATE SHADERS
 
     D3D11_INPUT_ELEMENT_DESC ied[] =
     {
+        // =====================================
+	    // PER VERTEX
+	    // =====================================
         {
             "POSITION",
             0,
@@ -654,10 +771,52 @@ bool InitPipeline()  // CREATE SHADERS
             24,
             D3D11_INPUT_PER_VERTEX_DATA,
             0
+        },
+        // =====================================
+        // PER INSTANCE
+        // =====================================
+        {
+            "INSTANCEWORLD",
+            0,  // first row of World-Matrix
+            DXGI_FORMAT_R32G32B32A32_FLOAT,  // 4D -> 16 Byte
+            1,
+            0,
+            D3D11_INPUT_PER_INSTANCE_DATA,
+            1
+        },
+
+        {
+            "INSTANCEWORLD",
+            1,  // second row of World-Matrix
+            DXGI_FORMAT_R32G32B32A32_FLOAT,  // 4D -> 16 Byte
+            1,
+            16,
+            D3D11_INPUT_PER_INSTANCE_DATA,
+            1
+        },
+
+        {
+            "INSTANCEWORLD",
+            2,  // third row of World-Matrix
+            DXGI_FORMAT_R32G32B32A32_FLOAT,  // 4D -> 16 Byte
+            1,
+            32,
+            D3D11_INPUT_PER_INSTANCE_DATA,
+            1
+        },
+
+        {
+            "INSTANCEWORLD",
+            3,  // fourth row of World-Matrix
+            DXGI_FORMAT_R32G32B32A32_FLOAT,  // 4D -> 16 Byte
+            1,
+            48,
+            D3D11_INPUT_PER_INSTANCE_DATA,
+            1
         }
     };
 
-    hr = dev->CreateInputLayout(ied, 3, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
+    hr = dev->CreateInputLayout(ied, 7, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
     if (!CheckHR(hr, "Failed to create input layout"))
     {
         VS->Release();
@@ -670,14 +829,14 @@ bool InitPipeline()  // CREATE SHADERS
     // MATRIX CONSTANT BUFFER
     D3D11_BUFFER_DESC matrixBufferDesc{};
     matrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-    matrixBufferDesc.ByteWidth = sizeof(MatrixBufferData);
+    matrixBufferDesc.ByteWidth = sizeof(CameraBufferData);
     matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     matrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;  // no reading required for CPU
 
     hr = dev->CreateBuffer(
         &matrixBufferDesc,
         nullptr,
-        &matrixBuffer
+        &cameraBuffer
     );
 
     if (!CheckHR(hr, "Failed to create matrix constant buffer"))
@@ -688,12 +847,78 @@ bool InitPipeline()  // CREATE SHADERS
     }
 
     // HLSL: register(b0)
-    devcon->VSSetConstantBuffers(0,1, &matrixBuffer);
+    devcon->VSSetConstantBuffers(0,1, &cameraBuffer);
 
     VS->Release();
     PS->Release();
 
     return true;
+}
+
+/**
+ * Creates a D3D11 Buffer for data
+ * differing between instances of 
+ * the same mesh with the given capacity.
+ * 
+ * @param capacity Capacity of the instance buffer
+ * @return Whether the creation was successful.
+ */
+
+bool CreateInstanceBuffer(uint32_t capacity)
+{
+    if (instanceBuffer)
+    {
+        instanceBuffer->Release();
+        instanceBuffer = nullptr;
+    }
+
+    D3D11_BUFFER_DESC desc{};
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.ByteWidth = sizeof(InstanceData) * capacity;
+
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    HRESULT hr = dev->CreateBuffer(
+        &desc,
+        nullptr,
+        &instanceBuffer
+    );
+
+    if (FAILED(hr))
+        return false;
+
+    instanceBufferCapacity = capacity;
+
+    return true;
+}
+
+RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material)
+{
+    RenderBatchKey key{
+        mesh,
+        material
+    };
+
+    // try to find existing batch
+    auto it = renderBatchLookup.find(key);
+
+    if (it != renderBatchLookup.end())
+        return renderBatches[it->second];
+
+    // create new batch
+    const size_t index = renderBatches.size();
+
+    RenderBatch batch{};
+    batch.mesh = mesh;
+    batch.material = material;
+
+    renderBatches.push_back(std::move(batch));
+
+    renderBatchLookup.emplace(key, index);
+
+    return renderBatches[index];
 }
 
 void SpawnObject(MeshHandle handle, const Transform& transform, const std::string& name = "Game Object")
@@ -791,10 +1016,10 @@ void CleanD3D(void)
     }
 
     // 2. Release GPU resources / views / pipeline objects
-    if (matrixBuffer)
+    if (cameraBuffer)
     {
-        matrixBuffer->Release();
-        matrixBuffer = nullptr;
+        cameraBuffer->Release();
+        cameraBuffer = nullptr;
     }
 
     if (layout)
