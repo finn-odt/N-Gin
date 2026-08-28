@@ -10,7 +10,11 @@ struct Material
 {
     DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
 
+	uint8_t isMetallic = 0;  // 0 or 1
 	TextureHandle albedoTexture = INVALID_TEXTURE;
+	TextureHandle normalTexture = INVALID_TEXTURE;
+	TextureHandle smoothnessTexture = INVALID_TEXTURE;
+	TextureHandle heightTexture = INVALID_TEXTURE;
 };
 
 class MaterialManager

@@ -21,6 +21,8 @@ struct Vertex
 	XMFLOAT3 position;
 	XMFLOAT3 normal;
 	XMFLOAT2 texCoord;
+
+	XMFLOAT4 tangent; // xyz = tangentOS, w = handedness (+1 / -1)
 };
 
 struct CpuMeshData
@@ -57,12 +59,14 @@ private:
 
 	MeshHandle CreateMeshFromCpuData(const CpuMeshData& data);
 
+	void GenerateFallbackTangent(Vertex& vertex);
+	void GenerateTriangleTangents(Vertex& v0, Vertex& v1, Vertex& v2);
 	CpuMeshData LoadMeshCpuWithUfbx(const std::string& path);
 
 public:
     explicit MeshManager(ID3D11Device* device);
 
-    MeshHandle CreateMesh(const std::vector<Vertex>& vertices);
+    /*MeshHandle CreateMesh(const std::vector<Vertex>& vertices);*/
 
 	MeshHandle LoadMesh(const std::string& path);
 	BoundingBox GetBoundingBoxForMesh(const std::vector<Vertex>& vertices);

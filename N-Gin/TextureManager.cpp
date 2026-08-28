@@ -45,3 +45,59 @@ const Texture& TextureManager::GetTexture(TextureHandle handle) const
 
     return textures[handle];
 }
+
+const Texture& TextureManager::GetDefaultAlbedoTexture()
+{
+    if (defaultAlbedoMap != INVALID_TEXTURE)
+        return textures[defaultAlbedoMap];
+
+    TextureHandle handle = LoadTexture(defaultAlbedoMapPath);
+
+    if (handle == INVALID_TEXTURE)
+        throw std::runtime_error("Default Texture couldn't be found.");
+
+    defaultAlbedoMap = handle;
+    return textures[handle];
+}
+
+const Texture& TextureManager::GetDefaultNormalTexture()
+{
+    if (defaultNormalMap != INVALID_TEXTURE)
+        return textures[defaultNormalMap];
+
+    TextureHandle handle = LoadTexture(defaultNormalMapPath);
+
+    if (handle == INVALID_TEXTURE)
+        throw std::runtime_error("Default Texture couldn't be found.");
+
+    defaultNormalMap = handle;
+    return textures[handle];
+}
+
+const Texture& TextureManager::GetDefaultSmoothnessTexture()
+{
+    if (defaultSmoothnessMap != INVALID_TEXTURE)
+        return textures[defaultSmoothnessMap];
+
+    TextureHandle handle = LoadTexture(defaultSmoothnessMapPath);
+
+    if (handle == INVALID_TEXTURE)
+        throw std::runtime_error("Default Texture couldn't be found.");
+
+    defaultSmoothnessMap = handle;
+    return textures[handle];
+}
+
+const Texture& TextureManager::GetDefaultHeightTexture()
+{
+    if (defaultHeightMap != INVALID_TEXTURE)
+        return textures[defaultHeightMap];
+
+    TextureHandle handle = LoadTexture(defaultHeightMapPath);
+
+    if (handle == INVALID_TEXTURE)
+        throw std::runtime_error("Default Texture couldn't be found.");
+
+    defaultHeightMap = handle;
+    return textures[handle];
+}

@@ -59,6 +59,8 @@ constexpr float MIN_PLANE_GAP = 0.01f;
 constexpr float MIN_FOV_DEGREES = 1.0f;
 constexpr float MAX_FOV_DEGREES = 179.0f;
 
+constexpr uint32_t MAX_LIGHTS = 16;
+
 struct Position;
 struct Rotation;
 struct Vertex;
@@ -116,6 +118,9 @@ struct CameraBufferData
 {
     XMMATRIX view;
     XMMATRIX projection;
+
+    XMFLOAT3 cameraPosition;
+    float padding;
 };
 
 struct MaterialBufferData
@@ -158,12 +163,24 @@ struct RenderBatchKeyHash
     }
 };
 
+struct LightBufferData
+{
+    GPULight lights[MAX_LIGHTS];
+
+    XMFLOAT3 ambientColor;
+    float ambientIntensity;
+
+    uint32_t lightCount;
+    float padding[3];
+};
+
 // Shader
 ID3D11InputLayout* layout;
 ID3D11PixelShader* pixelShader;
 ID3D11VertexShader* vertexShader;
 ID3D11Buffer* cameraBuffer = nullptr;    // b0 -> camera data
 ID3D11Buffer* materialBuffer = nullptr;  // b1 -> material data
+ID3D11Buffer* lightBuffer = nullptr;  // b2 -> light data
 ID3D11SamplerState* defaultSampler = nullptr;
 
 // Instancing (one draw call per mesh)
@@ -188,6 +205,10 @@ RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material);
 void UpdateInspector();
 XMMATRIX GetWorldMatrix(const Transform& transform);
 XMMATRIX GetProjectionMatrix(const Camera& camera, float aspectRatio);
+
+
+XMFLOAT3 QuaternionToEulerDegrees(const XMFLOAT4& rotation);
+XMVECTOR EulerDegreesToQuaternion(const XMFLOAT3& eulerRotation);
 
 // MOUSE INPUT (e.g. DRAG & DROP)
 HWND hoveredEdit = nullptr;
@@ -453,7 +474,7 @@ void Render(void)
     Camera* camera = entityManager.GetComponent<Camera>(MainCamera);
 
     // Camera matrices
-    XMVECTOR position = XMLoadFloat3(&cameraTransform->position);
+    XMVECTOR cameraPosition = XMLoadFloat3(&cameraTransform->position);
     XMVECTOR rotation = XMLoadFloat4(&cameraTransform->rotation);
 
     XMVECTOR forward = XMVector3Rotate(
@@ -466,9 +487,9 @@ void Render(void)
         rotation
     );
 
-    XMVECTOR target = XMVectorAdd(position, forward);
+    XMVECTOR target = XMVectorAdd(cameraPosition, forward);
 
-    XMMATRIX view = XMMatrixLookAtLH(position, target, up);
+    XMMATRIX view = XMMatrixLookAtLH(cameraPosition, target, up);
 
     float aspect = static_cast<float>(renderWidth) / static_cast<float>(renderHeight);
 
@@ -512,7 +533,57 @@ void Render(void)
 
     cameraData->projection = XMMatrixTranspose(projection);
 
+    XMStoreFloat3(&cameraData->cameraPosition, cameraPosition);
+
     devcon->Unmap(cameraBuffer, 0);
+
+    // Put Lights into buffer for GPU/shader
+    LightBufferData lightData{};
+
+    entityManager.ForEach<Transform, Light>([&](EntityId entity, Transform& transform, Light& light)
+        {
+            if (lightData.lightCount >= MAX_LIGHTS)
+                return;
+
+            GPULight& gpuLight = lightData.lights[lightData.lightCount++];  // use one of the buffers reserved GPULights
+            gpuLight.position = transform.position;
+            gpuLight.color = light.color;
+            gpuLight.intensity = light.intensity;
+            gpuLight.range = light.range;
+            gpuLight.type = static_cast<uint32_t>(light.type);
+
+            XMVECTOR rotation = XMLoadFloat4(&transform.rotation);
+            XMVECTOR direction = XMVector3Rotate( XMVectorSet(0, 0, 1, 0), rotation );  // forward vector
+
+            XMStoreFloat3(&gpuLight.direction, direction);
+
+            gpuLight.innerConeCos = std::cos( XMConvertToRadians(light.innerAngle) );
+
+            gpuLight.outerConeCos = std::cos( XMConvertToRadians(light.outerAngle) );
+        }
+    );
+
+    lightData.ambientColor = { 1.0f, 1.0f, 1.0f };
+    lightData.ambientIntensity = 0.15f;
+
+    D3D11_MAPPED_SUBRESOURCE mappedLight{};
+
+    HRESULT lightHr = devcon->Map(
+        lightBuffer,
+        0,
+        D3D11_MAP_WRITE_DISCARD,
+        0,
+        &mappedLight
+    );
+
+    if (FAILED(lightHr))
+        return;
+
+    *static_cast<LightBufferData*>(mappedLight.pData) = lightData;
+
+    devcon->Unmap(lightBuffer, 0);
+
+    devcon->PSSetConstantBuffers(2, 1, &lightBuffer);
 
     // Render all Entities with a MeshRenderer
     entityManager.ForEach<Transform, MeshRenderer>(
@@ -788,6 +859,15 @@ bool InitPipeline()  // CREATE SHADERS
             D3D11_INPUT_PER_VERTEX_DATA,
             0
         },
+        {
+		    "TANGENT",
+		    0,
+		    DXGI_FORMAT_R32G32B32A32_FLOAT,  // 4D -> 16 Byte
+		    0,
+		    32,
+		    D3D11_INPUT_PER_VERTEX_DATA,
+		    0
+		},
         // =====================================
         // PER INSTANCE
         // =====================================
@@ -832,7 +912,7 @@ bool InitPipeline()  // CREATE SHADERS
         }
     };
 
-    hr = dev->CreateInputLayout(ied, 7, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
+    hr = dev->CreateInputLayout(ied, 8, VS->GetBufferPointer(), VS->GetBufferSize(), &layout);
     if (!CheckHR(hr, "Failed to create input layout"))
     {
         VS->Release();
@@ -862,8 +942,9 @@ bool InitPipeline()  // CREATE SHADERS
         return false;
     }
 
-    // HLSL: VS - register(b0)
+    // HLSL: VS & PS - register(b0)
     devcon->VSSetConstantBuffers(0,1, &cameraBuffer);
+    devcon->PSSetConstantBuffers(0, 1, &cameraBuffer);
 
     D3D11_BUFFER_DESC materialBufferDesc{};
     materialBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
@@ -883,12 +964,13 @@ bool InitPipeline()  // CREATE SHADERS
 	// HLSL: PS - register(b1)
     devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
 
-    // Configure Smapler (for all textures)
+    // Configure Sampler (for all textures)
     D3D11_SAMPLER_DESC samplerDesc{};
-	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; // bilinear/trilinear interpolation
+	samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC; // filter interpolation = anisotropic
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim [D3D11_TEXTURE_ADDRESS_CLAMP]
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim
+    samplerDesc.MaxAnisotropy = 8;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.MinLOD = 0;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
@@ -904,6 +986,28 @@ bool InitPipeline()  // CREATE SHADERS
 
     // HLSL: PS - register(s0)
     devcon->PSSetSamplers(0, 1, &defaultSampler);
+
+    D3D11_BUFFER_DESC lightBufferDesc{};
+    lightBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+    lightBufferDesc.ByteWidth = sizeof(LightBufferData);
+    lightBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    lightBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = dev->CreateBuffer(
+        &lightBufferDesc,
+        nullptr,
+        &lightBuffer
+    );
+
+    if (!CheckHR(hr, "Failed to create light constant buffer"))
+    {
+        VS->Release();
+        PS->Release();
+        return false;
+    }
+
+    // HLSL: PS - register(b2)
+    devcon->PSSetConstantBuffers(2, 1, &lightBuffer);
 
     VS->Release();
     PS->Release();
@@ -985,12 +1089,40 @@ bool BindMaterial(MaterialHandle handle)
     // HLSL: PS - register(b1)
     devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
 
-    const Texture& texture = textureManager->GetTexture(material.albedoTexture);
-
-    ID3D11ShaderResourceView* srv = texture.srv.Get();
+    ID3D11ShaderResourceView* albedoSrv =
+        material.albedoTexture != INVALID_TEXTURE
+        ? textureManager->GetTexture(material.albedoTexture).srv.Get()
+        : textureManager->GetDefaultAlbedoTexture().srv.Get();
 
     // HLSL: PS - register(t0)
-    devcon->PSSetShaderResources(0,1,&srv);
+    devcon->PSSetShaderResources(0,1,&albedoSrv);
+
+    ID3D11ShaderResourceView* normalSrv =
+        material.normalTexture != INVALID_TEXTURE
+        ? textureManager->GetTexture(material.normalTexture).srv.Get()
+        : textureManager->GetDefaultNormalTexture().srv.Get();
+
+    // HLSL: PS - register(t1)
+    devcon->PSSetShaderResources(1, 1, &normalSrv);
+
+    ID3D11ShaderResourceView* smoothnessSrv =
+        material.smoothnessTexture != INVALID_TEXTURE
+        ? textureManager->GetTexture(material.smoothnessTexture).srv.Get()
+        : textureManager->GetDefaultNormalTexture().srv.Get();
+
+    // HLSL: PS - register(t2)
+    devcon->PSSetShaderResources(2, 1, &smoothnessSrv);
+
+    ID3D11ShaderResourceView* heightSrv =
+        material.heightTexture != INVALID_TEXTURE
+        ? textureManager->GetTexture(material.heightTexture).srv.Get()
+        : textureManager->GetDefaultNormalTexture().srv.Get();
+
+    // HLSL: PS - register(t3)
+    devcon->PSSetShaderResources(3, 1, &heightSrv);
+
+
+
 
     return true;
 }
@@ -1066,35 +1198,49 @@ std::map<std::string, MaterialHandle> CreateMaterials()
     std::map<std::string, MaterialHandle> output;
 
     TextureHandle teddyTexture = textureManager->LoadTexture("Assets/teddy_albedo.png");
+    TextureHandle teddyNormalTexture = textureManager->LoadTexture("Assets/teddy_normal.png");
+    TextureHandle teddyHeightTexture = textureManager->LoadTexture("Assets/teddy_height.png");
 
     Material redMaterial;
     redMaterial.baseColor = { 1.0f, 0.1f, 0.1f, 1.0f };
     redMaterial.albedoTexture = teddyTexture;
+    redMaterial.normalTexture = teddyNormalTexture;
+    redMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("red", materialManager->CreateMaterial(redMaterial));
 
     Material blueMaterial;
     blueMaterial.baseColor = { 0.1f, 0.2f, 1.0f, 1.0f };
     blueMaterial.albedoTexture = teddyTexture;
+    blueMaterial.normalTexture = teddyNormalTexture;
+    blueMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("blue", materialManager->CreateMaterial(blueMaterial));
 
     Material greenMaterial;
     greenMaterial.baseColor = { 0.1f, 1.0f, 0.1f, 1.0f };
     greenMaterial.albedoTexture = teddyTexture;
+    greenMaterial.normalTexture = teddyNormalTexture;
+    greenMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("green", materialManager->CreateMaterial(greenMaterial));
 
     Material yellowMaterial;
     yellowMaterial.baseColor = { 0.1f, 0.9f, 1.0f, 1.0f };
     yellowMaterial.albedoTexture = teddyTexture;
+    yellowMaterial.normalTexture = teddyNormalTexture;
+    yellowMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("yellow", materialManager->CreateMaterial(yellowMaterial));
 
     Material orangeMaterial;
     orangeMaterial.baseColor = { 0.7f, 1.0f, 0.1f, 1.0f };
     orangeMaterial.albedoTexture = teddyTexture;
+    orangeMaterial.normalTexture = teddyNormalTexture;
+    orangeMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("orange", materialManager->CreateMaterial(orangeMaterial));
 
     Material purpleMaterial;
     purpleMaterial.baseColor = { 0.95f, 0.1f, 0.85f, 1.0f };
     purpleMaterial.albedoTexture = teddyTexture;
+    purpleMaterial.normalTexture = teddyNormalTexture;
+    purpleMaterial.heightTexture = teddyHeightTexture;
     output.try_emplace("purple", materialManager->CreateMaterial(purpleMaterial));
 
     return output;
@@ -1104,11 +1250,35 @@ bool InitGraphics()
 {
     AddCamera();  // add main camera
 
+    // add a global light source (like the sun)
+    EntityId lightEntity = entityManager.AddEntity("Light");
+    EntityId lightEntity2 = entityManager.AddEntity("Light Point");
+
+    Transform lightTransform;
+    lightTransform.position = { 0.0f, 0.0f, 0.0f };
+    XMStoreFloat4(
+        &lightTransform.rotation,
+        EulerDegreesToQuaternion({ -30.0f, 45.0f, 0.0f })
+    );
+    entityManager.AddComponent(lightEntity, lightTransform);
+    entityManager.AddComponent(lightEntity2, lightTransform);
+
+    // directional light
+    entityManager.AddComponent(lightEntity, Light{});
+
+    // point light
+    Light pointLight;
+    pointLight.type = LightType::Point;
+    pointLight.color = { 1, 0, 0 };
+    pointLight.range = 25.0f;
+    pointLight.intensity = 105.0f;
+    entityManager.AddComponent(lightEntity2, pointLight);
+
+    // create some basic materials
     auto materials = CreateMaterials();
 
     try
     {
-
         MeshHandle mesh = meshManager->LoadMesh("Assets/testmodel.fbx");
 
         int n = 20;
@@ -1190,6 +1360,12 @@ void CleanD3D(void)
     {
         materialBuffer->Release();
         materialBuffer = nullptr;
+    }
+	
+	if (lightBuffer)
+    {
+        lightBuffer->Release();
+        lightBuffer = nullptr;
     }
 
     if (instanceBuffer)
