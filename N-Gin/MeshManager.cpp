@@ -176,7 +176,7 @@ CpuMeshData MeshManager::LoadMeshCpuWithUfbx(const std::string& path)
 
 				vertex.texCoord = {
 					static_cast<float>(uv.x),
-					static_cast<float>(uv.y)
+					1.0f - static_cast<float>(uv.y)
 				};
 
 				result.vertices.push_back(vertex);

@@ -33,9 +33,6 @@
     <ClInclude Include="AnimationStateMachine.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
-    <ClInclude Include="Components.h">
-      <Filter>Headerdateien</Filter>
-    </ClInclude>
     <ClInclude Include="EntityManager.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
@@ -48,10 +45,28 @@
     <ClInclude Include="ufbx.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
-    <ClInclude Include="Camera.h">
+    <ClInclude Include="MeshManager.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
-    <ClInclude Include="MeshManager.h">
+    <ClInclude Include="Components\Camera.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="Components\Components.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="Components\MeshRenderer.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="Components\Physics.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="Components\Transform.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="MaterialManager.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="TextureManager.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
   </ItemGroup>
@@ -66,6 +81,12 @@
       <Filter>Quelldateien</Filter>
     </ClCompile>
     <ClCompile Include="MeshManager.cpp">
+      <Filter>Quelldateien</Filter>
+    </ClCompile>
+    <ClCompile Include="MaterialManager.cpp">
+      <Filter>Quelldateien</Filter>
+    </ClCompile>
+    <ClCompile Include="TextureManager.cpp">
       <Filter>Quelldateien</Filter>
     </ClCompile>
   </ItemGroup>

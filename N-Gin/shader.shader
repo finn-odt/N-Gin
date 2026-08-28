@@ -25,6 +25,14 @@ cbuffer MatrixBuffer : register(b0)
     matrix projection;
 };
 
+cbuffer MaterialBuffer : register(b1)
+{
+    float4 baseColor;
+};
+
+Texture2D albedoTexture : register(t0);
+SamplerState textureSampler : register(s0);
+
 struct VIn {
     // input slot 0 (per vertex)
     float3 position : POSITION;
@@ -79,7 +87,6 @@ VOut VS(VIn input)
 // Pixel/Fragment Shader
 float4 PS(VOut input) : SV_TARGET
 {
-    float3 normal = normalize(input.normal);
 
     /*// Simple directional light
     float3 lightDirection = normalize(float3(5.0f, 5.0f, -15.0f));  // for debugging
@@ -97,6 +104,10 @@ float4 PS(VOut input) : SV_TARGET
     float3 baseColor = lerp(colorA, colorB, checker);
 
     return float4(baseColor * lighting, 1.0f);*/
+    
+    //float3 normal = normalize(input.normal);
+    //return float4(input.texCoord.xy, 1.0f, 1.0f);
 
-    return float4(input.texCoord.xy, 1.0f, 1.0f);
+    float4 textureColor = albedoTexture.Sample(textureSampler, input.texCoord);
+    return textureColor * baseColor;
 }

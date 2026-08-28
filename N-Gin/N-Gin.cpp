@@ -28,6 +28,8 @@
 #include "Components/Components.h"
 #include "EntityManager.h"
 #include "MeshManager.h"
+#include "MaterialManager.h"
+#include "TextureManager.h"
 
 using namespace DirectX;
 
@@ -65,6 +67,8 @@ struct Matrix3x3;
 
 EntityManager entityManager;
 std::unique_ptr<MeshManager> meshManager;
+std::unique_ptr<MaterialManager> materialManager;
+std::unique_ptr<TextureManager> textureManager;
 
 // direct x pipeline (Interface Direct-X Global Interface Swap Chain)
 IDXGISwapChain* swapchain;
@@ -107,10 +111,16 @@ XMMATRIX world;
 XMMATRIX view;
 XMMATRIX projection;
 
-struct CameraBufferData  // needs to correspond to the Data Structure in the Shader
+// needs to correspond to the Data Structure in the Shader
+struct CameraBufferData
 {
     XMMATRIX view;
     XMMATRIX projection;
+};
+
+struct MaterialBufferData
+{
+    XMFLOAT4 baseColor;  // will be changed to textures later
 };
 
 struct InstanceData
@@ -152,7 +162,9 @@ struct RenderBatchKeyHash
 ID3D11InputLayout* layout;
 ID3D11PixelShader* pixelShader;
 ID3D11VertexShader* vertexShader;
-ID3D11Buffer* cameraBuffer = nullptr;
+ID3D11Buffer* cameraBuffer = nullptr;    // b0 -> camera data
+ID3D11Buffer* materialBuffer = nullptr;  // b1 -> material data
+ID3D11SamplerState* defaultSampler = nullptr;
 
 // Instancing (one draw call per mesh)
 ID3D11Buffer* instanceBuffer = nullptr;
@@ -169,9 +181,9 @@ void FixedUpdate(float fixedDeltaTime);
 void CleanD3D(void);
 bool InitGraphics(void);
 bool InitPipeline(void);  // setup shaders, const. buffers, ...
-
 bool CreateInstanceBuffer(uint32_t capacity);
 
+bool BindMaterial(MaterialHandle material);
 RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material);
 void UpdateInspector();
 XMMATRIX GetWorldMatrix(const Transform& transform);
@@ -345,7 +357,10 @@ bool InitD3D(HWND Hwnd)
     if (!CheckHR(hr, "Failed to create D3D11 device and swapchain"))
         return false;
 
+    // initialize resource managers
     meshManager = std::make_unique<MeshManager>(dev);
+	materialManager = std::make_unique<MaterialManager>();  // no dev yet (CPU-sided for now)
+    textureManager = std::make_unique<TextureManager>(dev);
 
     // BACK BUFFER
     ID3D11Texture2D* pBackBuffer;
@@ -590,7 +605,8 @@ void Render(void)
             0
         );
 
-        // TODO: BindMaterial(batch.material);
+        if (!BindMaterial(batch.material))
+            continue;
 
         // draw
         devcon->DrawIndexedInstanced(
@@ -827,14 +843,14 @@ bool InitPipeline()  // CREATE SHADERS
     devcon->IASetInputLayout(layout);  // change on different shader/pipeline
 
     // MATRIX CONSTANT BUFFER
-    D3D11_BUFFER_DESC matrixBufferDesc{};
-    matrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-    matrixBufferDesc.ByteWidth = sizeof(CameraBufferData);
-    matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    matrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;  // no reading required for CPU
+    D3D11_BUFFER_DESC cameraMatrixBufferDesc{};
+    cameraMatrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+    cameraMatrixBufferDesc.ByteWidth = sizeof(CameraBufferData);
+    cameraMatrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cameraMatrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;  // no reading required for CPU
 
     hr = dev->CreateBuffer(
-        &matrixBufferDesc,
+        &cameraMatrixBufferDesc,
         nullptr,
         &cameraBuffer
     );
@@ -846,8 +862,48 @@ bool InitPipeline()  // CREATE SHADERS
         return false;
     }
 
-    // HLSL: register(b0)
+    // HLSL: VS - register(b0)
     devcon->VSSetConstantBuffers(0,1, &cameraBuffer);
+
+    D3D11_BUFFER_DESC materialBufferDesc{};
+    materialBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+    materialBufferDesc.ByteWidth = sizeof(MaterialBufferData);  // has to be multiples of 16-Byte !!!
+    materialBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    materialBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = dev->CreateBuffer(&materialBufferDesc, nullptr, &materialBuffer);
+
+    if (!CheckHR(hr,"Failed to create material constant buffer"))
+    {
+        VS->Release();
+        PS->Release();
+        return false;
+    }
+	
+	// HLSL: PS - register(b1)
+    devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
+
+    // Configure Smapler (for all textures)
+    D3D11_SAMPLER_DESC samplerDesc{};
+	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; // bilinear/trilinear interpolation
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim [D3D11_TEXTURE_ADDRESS_CLAMP]
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;  // repeat UV-udim
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MinLOD = 0;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+    hr = dev->CreateSamplerState(&samplerDesc, &defaultSampler);
+
+    if (!CheckHR(hr, "Failed to create default sampler"))
+    {
+        VS->Release();
+        PS->Release();
+        return false;
+    }
+
+    // HLSL: PS - register(s0)
+    devcon->PSSetSamplers(0, 1, &defaultSampler);
 
     VS->Release();
     PS->Release();
@@ -894,6 +950,51 @@ bool CreateInstanceBuffer(uint32_t capacity)
     return true;
 }
 
+bool BindMaterial(MaterialHandle handle)
+{
+    if (!materialManager)
+        return false;
+
+    // Invalid material means: use the fallback/default material
+    if (handle == INVALID_MATERIAL)
+        handle = materialManager->GetDefaultMaterial();
+
+    // load material
+    const Material& material = materialManager->GetMaterial(handle);
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+
+    HRESULT hr = devcon->Map(
+        materialBuffer,
+        0,
+        D3D11_MAP_WRITE_DISCARD,
+        0,
+        &mapped
+    );
+
+    if (FAILED(hr))
+        return false;
+
+    auto* data = static_cast<MaterialBufferData*>(mapped.pData);
+
+    // set material (base color) to the given material for the shader (for the next draw call)
+    data->baseColor = material.baseColor;
+
+    devcon->Unmap(materialBuffer, 0);
+
+    // HLSL: PS - register(b1)
+    devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
+
+    const Texture& texture = textureManager->GetTexture(material.albedoTexture);
+
+    ID3D11ShaderResourceView* srv = texture.srv.Get();
+
+    // HLSL: PS - register(t0)
+    devcon->PSSetShaderResources(0,1,&srv);
+
+    return true;
+}
+
 RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material)
 {
     RenderBatchKey key{
@@ -921,17 +1022,20 @@ RenderBatch& GetOrCreateRenderBatch(MeshHandle mesh, MaterialHandle material)
     return renderBatches[index];
 }
 
-void SpawnObject(MeshHandle handle, const Transform& transform, const std::string& name = "Game Object")
+void SpawnObject(MeshHandle mesh, MaterialHandle material, const Transform& transform, const std::string& name = "Game Object")
 {
     EntityId entity = entityManager.AddEntity(name);
 
     entityManager.AddComponent(entity, transform);
 
+    if (material == INVALID_MATERIAL)
+        material = materialManager->GetDefaultMaterial();
+
     entityManager.AddComponent(
         entity,
         MeshRenderer{
-            handle,
-            INVALID_MATERIAL,
+            mesh,
+            material,
             true
         }
     );
@@ -957,9 +1061,50 @@ void AddCamera(void)
     }
 }
 
+std::map<std::string, MaterialHandle> CreateMaterials()
+{
+    std::map<std::string, MaterialHandle> output;
+
+    TextureHandle teddyTexture = textureManager->LoadTexture("Assets/teddy_albedo.png");
+
+    Material redMaterial;
+    redMaterial.baseColor = { 1.0f, 0.1f, 0.1f, 1.0f };
+    redMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("red", materialManager->CreateMaterial(redMaterial));
+
+    Material blueMaterial;
+    blueMaterial.baseColor = { 0.1f, 0.2f, 1.0f, 1.0f };
+    blueMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("blue", materialManager->CreateMaterial(blueMaterial));
+
+    Material greenMaterial;
+    greenMaterial.baseColor = { 0.1f, 1.0f, 0.1f, 1.0f };
+    greenMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("green", materialManager->CreateMaterial(greenMaterial));
+
+    Material yellowMaterial;
+    yellowMaterial.baseColor = { 0.1f, 0.9f, 1.0f, 1.0f };
+    yellowMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("yellow", materialManager->CreateMaterial(yellowMaterial));
+
+    Material orangeMaterial;
+    orangeMaterial.baseColor = { 0.7f, 1.0f, 0.1f, 1.0f };
+    orangeMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("orange", materialManager->CreateMaterial(orangeMaterial));
+
+    Material purpleMaterial;
+    purpleMaterial.baseColor = { 0.95f, 0.1f, 0.85f, 1.0f };
+    purpleMaterial.albedoTexture = teddyTexture;
+    output.try_emplace("purple", materialManager->CreateMaterial(purpleMaterial));
+
+    return output;
+}
+
 bool InitGraphics()
 {
     AddCamera();  // add main camera
+
+    auto materials = CreateMaterials();
 
     try
     {
@@ -983,7 +1128,26 @@ bool InitGraphics()
                 );
                 transform.scale = { 1.0f, 1.0f, 1.0f };
 
-                SpawnObject(mesh, transform, "Teddy " + std::to_string(i) + std::to_string(k));
+
+                using Clock = std::chrono::steady_clock;
+
+                int random = RandomInt(0, 100);
+
+                MaterialHandle material;
+                if (random < 16)
+                    material = materials["red"];
+                else if (random < 33)
+                    material = materials["blue"];
+                else if (random < 50)
+                    material = materials["green"];
+                else if (random < 66)
+                    material = materials["yellow"];
+                else if (random < 84)
+                    material = materials["purple"];
+                else
+                    material = materials["orange"];
+
+                SpawnObject(mesh, material, transform, "Teddy " + std::to_string(i) + std::to_string(k));
             }
         }
 
@@ -1020,6 +1184,24 @@ void CleanD3D(void)
     {
         cameraBuffer->Release();
         cameraBuffer = nullptr;
+    }
+
+    if (materialBuffer)
+    {
+        materialBuffer->Release();
+        materialBuffer = nullptr;
+    }
+
+    if (instanceBuffer)
+    {
+        instanceBuffer->Release();
+        instanceBuffer = nullptr;
+    }
+	
+	if (defaultSampler)
+    {
+        defaultSampler->Release();
+        defaultSampler = nullptr;
     }
 
     if (layout)
@@ -1060,6 +1242,8 @@ void CleanD3D(void)
 
     // release all loaded meshes
     meshManager.reset();
+	materialManager.reset();
+	textureManager.reset();
 
     // 3. Release the device context
     if (devcon)
