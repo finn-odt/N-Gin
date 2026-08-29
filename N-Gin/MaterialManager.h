@@ -6,11 +6,17 @@
 
 #include "Usings.h"
 
+using namespace DirectX;
+
 struct Material
 {
-    DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+    XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+
+	XMFLOAT2 tiling{ 1.0f, 1.0f };
+	XMFLOAT2 offset{ 0.0f, 0.0f };
 
 	uint8_t isMetallic = 0;  // 0 or 1
+
 	TextureHandle albedoTexture = INVALID_TEXTURE;
 	TextureHandle normalTexture = INVALID_TEXTURE;
 	TextureHandle smoothnessTexture = INVALID_TEXTURE;

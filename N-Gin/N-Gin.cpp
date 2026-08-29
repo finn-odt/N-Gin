@@ -126,6 +126,8 @@ struct CameraBufferData
 struct MaterialBufferData
 {
     XMFLOAT4 baseColor;  // will be changed to textures later
+
+    XMFLOAT4 albedoUVTransform;  // xy = tiling | zw = offset
 };
 
 struct InstanceData
@@ -961,7 +963,8 @@ bool InitPipeline()  // CREATE SHADERS
         return false;
     }
 	
-	// HLSL: PS - register(b1)
+	// HLSL: VS & PS - register(b1)
+    devcon->VSSetConstantBuffers(1, 1, &materialBuffer);
     devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
 
     // Configure Sampler (for all textures)
@@ -1083,10 +1086,19 @@ bool BindMaterial(MaterialHandle handle)
 
     // set material (base color) to the given material for the shader (for the next draw call)
     data->baseColor = material.baseColor;
+    //data->isMetallic = static_cast<bool>(material.isMetallic);
+
+    data->albedoUVTransform = {
+	    material.tiling.x,
+        material.tiling.y,
+        material.offset.x,
+        material.offset.y
+    };
 
     devcon->Unmap(materialBuffer, 0);
 
-    // HLSL: PS - register(b1)
+    // HLSL: VS & PS - register(b1)
+    devcon->VSSetConstantBuffers(1, 1, &materialBuffer);
     devcon->PSSetConstantBuffers(1, 1, &materialBuffer);
 
     ID3D11ShaderResourceView* albedoSrv =

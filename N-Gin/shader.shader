@@ -54,7 +54,12 @@ cbuffer CameraMatrixBuffer : register(b0)
 cbuffer MaterialBuffer : register(b1)
 {
     float4 baseColor;
-    bool isMetallic;  // NEW
+
+    float4 albedoUVTransform;
+    // xy = tiling
+    // zw = offset
+    
+    //bool isMetallic;  // NEW
 };
 
 cbuffer LightBuffer : register(b2)
@@ -99,6 +104,11 @@ struct VOut
     float4 tangentWS : TANGENT0;
 };
 
+float2 TransformTex(float2 uv, float4 transform)
+{
+    return uv * transform.xy + transform.zw;
+}
+
 // Vertex Shader
 VOut VS(VIn input)
 {
@@ -129,7 +139,7 @@ VOut VS(VIn input)
     float3 normalWS = normalize( mul(input.normal, (float3x3)world) );
     output.worldNormal = normalWS;
 
-    output.uv = input.uv;
+    output.uv = TransformTex(input.uv, albedoUVTransform);  // add offset and tiling
 
     float3 tangentWS = normalize( mul(input.tangent.rgb, (float3x3)world) );
     // re-orthogonalize tangent against normal
@@ -144,6 +154,7 @@ float3 CalculateLight(float3 normalWS, float3 viewDirWS, float3 lightDirWS, Ligh
 {                
     float NdotL = saturate(dot(normalWS, lightDirWS)); // dot-product of light and normal
 
+    // if(isMetallic) -> diffuse isShader always black
     float3 diffuse = light.color * light.intensity * NdotL;  // diffuse-color could be added
 
     float3 specular = float3(0.0f, 0.0f, 0.0f);
