@@ -72,6 +72,12 @@
     <ClInclude Include="Components\Light.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="Components\Flocking.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
+    <ClInclude Include="Components\VirtualRoom2D.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="N-Gin.cpp">

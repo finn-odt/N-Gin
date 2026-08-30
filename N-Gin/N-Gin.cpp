@@ -695,32 +695,142 @@ void Render(void)
     swapchain->Present(0,0);
 }
 
+void ApplyForceToPhysicsEntity(Physics& physics, XMVECTOR force)
+{
+    // add the force to the acceleration (that is set to 0 after every frame)
+    XMStoreFloat3(&physics.linearAcceleration, XMLoadFloat3(&physics.linearAcceleration) + force);
+}
+
+void FlockingAlgorithm()
+{
+    entityManager.ForEach<Transform, Physics, Flocking>(
+        [&](EntityId entity, Transform& transform, Physics& physics, Flocking& flocking)
+        {
+            XMVECTOR velocity = XMLoadFloat3(&physics.linearVelocity);
+
+            XMVECTOR separationForce = { 0.0f, 0.0f, 0.0f },
+        			alignmentForce = { 0.0f, 0.0f, 0.0f },
+        			cohesionForce = { 0.0f, 0.0f, 0.0f };
+
+            // SEPARATION
+            float desiredDistance = flocking.separationRadius;
+            XMVECTOR separationSum = { 0.0f, 0.0f , 0.0f };
+            int separationCount = 0;
+
+            // ALIGNMENT
+            XMVECTOR meanVelocity = { 0.0f, 0.0f, 0.0f };
+            int awareOfNeighbourCount = 0;
+
+            // COHESION
+            XMVECTOR meanPosition = { 0.0f, 0.0f, 0.0f };
+
+
+            // nearest neighbours
+            entityManager.ForEach<Transform, Physics, Flocking>(
+                [&](EntityId otherEntity, Transform& otherTransform, Physics& otherPhysics, Flocking& otherFlocking)
+                {
+
+                    XMVECTOR distVec = XMLoadFloat3(&transform.position) - XMLoadFloat3(&otherTransform.position);
+                    float dist = XMVectorGetX(XMVector3Length(distVec));
+
+                    if (dist > 0 && dist < flocking.awarenessRadius)
+                    {
+                        // SEPARATION
+                        if (dist < desiredDistance) {
+                            distVec = XMVector3Normalize(distVec) / dist;
+	                        separationSum += distVec;
+	                        separationCount++;
+	                    }
+
+                        // ALIGNMENT
+                        meanVelocity += XMLoadFloat3(&otherPhysics.linearVelocity);
+                        awareOfNeighbourCount++;
+
+                        // COHESION
+                        meanPosition += XMLoadFloat3(&otherTransform.position);
+                    }
+                }
+            );
+
+            // steer = desired - velocity
+
+            // SEPARATION
+            if (separationCount > 0)
+            {
+                separationSum = separationSum / separationCount;
+                separationSum = XMVector3Normalize(separationSum) * flocking.maxSpeed;
+
+                separationForce = XMVector3ClampLength(separationSum - velocity, 0, flocking.maxForce);
+            }
+
+            if (awareOfNeighbourCount > 0)
+            {
+                // ALIGNMENT
+                meanVelocity = XMVector3Normalize(meanVelocity / awareOfNeighbourCount) * flocking.maxSpeed;
+                // do not slow down, but try to hold maxSpeed while following the direction
+
+                alignmentForce = XMVector3ClampLength(meanVelocity - velocity, 0, flocking.maxForce);
+
+				// COHESION
+                meanPosition /= awareOfNeighbourCount;
+                XMVECTOR desiredDir = XMVector3Normalize(meanPosition - XMLoadFloat3(&transform.position)) * flocking.maxSpeed;
+
+                cohesionForce = XMVector3ClampLength(desiredDir - velocity, 0, flocking.maxForce);
+            }
+
+            // apply different weights for different behaviour
+            XMVECTOR steering =
+                separationForce * flocking.separationWeight
+                + alignmentForce * flocking.alignmentWeight
+                + cohesionForce * flocking.cohesionWeight;
+
+            // eliminate vertical movement
+            steering = XMVectorMultiply( steering, XMVectorSet(1.0f, 0.0f, 1.0f, 0.0f) );
+
+            // clamp to maximum force
+            steering = XMVector3ClampLength(steering, 0.0f, flocking.maxForce);
+
+            // apply force to physics-components for being used in the next step of Physics-calculation
+            ApplyForceToPhysicsEntity(physics, steering);
+        }
+    );
+}
+
 void FixedUpdate(float fixedDeltaTime) {
     // Physics goes here
     // Example:
     // position += velocity * fixedDeltaTime;
+
+    FlockingAlgorithm();  // modifies linearAcceleration, therefore needs to stay BEFORE Physics
 
     entityManager.ForEach<Transform, Physics>(
 		[&](EntityId entity, Transform& transform, Physics& physics)
 		{
             constexpr float epsilon = 0.1f;
 
+            XMVECTOR downVector = { 0.0f, 1.0f, 0.0f };
+
 			// Gravity
             if (physics.useGravity)
-				physics.linearVelocity.y += GRAVITY * fixedDeltaTime;
+                ApplyForceToPhysicsEntity(physics, downVector * GRAVITY);
 
-            // update position
+            // add acceleration to velocity
             XMVECTOR velocity = XMLoadFloat3(&physics.linearVelocity);
-            float speedSq = XMVectorGetX(XMVector3LengthSq(velocity));  // squared length to avoid sqrt()
+            velocity += XMLoadFloat3(&physics.linearAcceleration) * fixedDeltaTime;
+            XMStoreFloat3(&physics.linearVelocity, velocity);
 
+            // is velocity.length > 0 (are we moving?)
+            float speedSq = XMVectorGetX(XMVector3LengthSq(velocity));  // squared length to avoid sqrt()
             if (speedSq > epsilon * epsilon)
             {
+                // update position
                 XMVECTOR position = XMLoadFloat3(&transform.position);
-
                 position += velocity * fixedDeltaTime;
-
                 XMStoreFloat3(&transform.position, position);
             }
+
+            // reset acceleration for next frame
+            XMStoreFloat3(&physics.linearAcceleration, {0.0f, 0.0f, 0.0f});
 
             // update rotation
             XMVECTOR angVelocity = XMLoadFloat3(&physics.angularVelocity);
@@ -742,6 +852,27 @@ void FixedUpdate(float fixedDeltaTime) {
 				newRotation = XMQuaternionNormalize(newRotation);
 
                 XMStoreFloat4( &transform.rotation, newRotation);
+            }
+
+            // check for Virtual Room Boundaries
+            if (entityManager.HasComponent<VirtualRoom2D>(entity))
+            {
+                VirtualRoom2D* vr = entityManager.GetComponent<VirtualRoom2D>(entity);
+
+                float minX = vr->center.x - vr->width / 2.0f;
+                float maxX = vr->center.x + vr->width / 2.0f;
+                float minY = vr->center.z - vr->height / 2.0f;
+                float maxY = vr->center.z + vr->height / 2.0f;
+
+                if (transform.position.x < minX)
+                    transform.position.x = vr->width / 2.0f;
+                if (transform.position.x > maxX)
+                    transform.position.x = -vr->width / 2.0f;
+
+                if (transform.position.z < minY)
+                    transform.position.z = vr->height / 2.0f;
+                if (transform.position.z > maxY)
+                    transform.position.z = -vr->height / 2.0f;
             }
 		}
     );
@@ -1183,6 +1314,20 @@ void SpawnObject(MeshHandle mesh, MaterialHandle material, const Transform& tran
             true
         }
     );
+
+    // TODO: only for specific like the Teddies
+
+    Physics physics{};
+    physics.linearVelocity =
+    {
+        RandomFloat(-2.5f, 2.5f),
+        0.0f,
+        RandomFloat(-2.5f, 2.5f),
+    };
+
+    entityManager.AddComponent(entity, physics);
+    entityManager.AddComponent(entity, Flocking{});
+    entityManager.AddComponent(entity, VirtualRoom2D{});  // for setting boundaries
 }
 
 void AddCamera(void)
@@ -1190,7 +1335,8 @@ void AddCamera(void)
     EntityId cameraEntity = entityManager.AddEntity((MainCameraInitialized ? "Camera" : "Main Camera"));
 
     Transform cameraTransform;
-    cameraTransform.position = { 0.0f, 0.0f, -15.0f };
+    cameraTransform.position = { 30.0f, 100.0f, -20.0f };
+    XMStoreFloat4(&cameraTransform.rotation, EulerDegreesToQuaternion({ 55.0f, -10.0f, 0.0f }));
 
     entityManager.AddComponent(cameraEntity, cameraTransform);
 
@@ -1276,7 +1422,9 @@ bool InitGraphics()
     entityManager.AddComponent(lightEntity2, lightTransform);
 
     // directional light
-    entityManager.AddComponent(lightEntity, Light{});
+    Light directionalLight;
+    directionalLight.intensity = 10.0f;
+    entityManager.AddComponent(lightEntity, directionalLight);
 
     // point light
     Light pointLight;
@@ -1298,6 +1446,10 @@ bool InitGraphics()
         {
             for (int k = 0; k < n; k++)
             {
+                int ran = RandomInt(0, 100);
+                if (ran < 60)
+                    continue;
+
                 Transform transform;
                 transform.position = {5.0f*i - n/2.0f, 0.0f, 5.0f*k - n/2.0f };
                 XMStoreFloat4(

@@ -130,10 +130,12 @@
     <ClInclude Include="AnimationStateMachine.h" />
     <ClInclude Include="Components\Camera.h" />
     <ClInclude Include="Components\Components.h" />
+    <ClInclude Include="Components\Flocking.h" />
     <ClInclude Include="Components\Light.h" />
     <ClInclude Include="Components\MeshRenderer.h" />
     <ClInclude Include="Components\Physics.h" />
     <ClInclude Include="Components\Transform.h" />
+    <ClInclude Include="Components\VirtualRoom2D.h" />
     <ClInclude Include="EntityManager.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="MaterialManager.h" />
