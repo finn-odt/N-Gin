@@ -147,6 +147,7 @@
     <ClInclude Include="TextureManager.h" />
     <ClInclude Include="ufbx.h" />
     <ClInclude Include="Usings.h" />
+    <ClInclude Include="VideoRecorder.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="EntityManager.cpp" />
@@ -155,6 +156,7 @@
     <ClCompile Include="N-Gin.cpp" />
     <ClCompile Include="TextureManager.cpp" />
     <ClCompile Include="ufbx.c" />
+    <ClCompile Include="VideoRecorder.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="N-Gin.rc" />

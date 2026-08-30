@@ -173,7 +173,7 @@ float3 CalculateLight(float3 normalWS, float3 viewDirWS, float3 lightDirWS, Ligh
 }
 
 float3 CalculateDirectionalLight(float3 normalWS, float3 viewDirWS, LightData light) {
-    float3 lightDirWS = normalize(-light.direction);
+    float3 lightDirWS = normalize(light.direction);
 
     return CalculateLight(normalWS, viewDirWS, lightDirWS, light);
 }

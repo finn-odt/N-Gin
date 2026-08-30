@@ -78,6 +78,9 @@
     <ClInclude Include="Components\VirtualRoom2D.h">
       <Filter>Headerdateien</Filter>
     </ClInclude>
+    <ClInclude Include="VideoRecorder.h">
+      <Filter>Headerdateien</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="N-Gin.cpp">
@@ -96,6 +99,9 @@
       <Filter>Quelldateien</Filter>
     </ClCompile>
     <ClCompile Include="TextureManager.cpp">
+      <Filter>Quelldateien</Filter>
+    </ClCompile>
+    <ClCompile Include="VideoRecorder.cpp">
       <Filter>Quelldateien</Filter>
     </ClCompile>
   </ItemGroup>

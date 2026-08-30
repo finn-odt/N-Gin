@@ -30,6 +30,7 @@
 #include "MeshManager.h"
 #include "MaterialManager.h"
 #include "TextureManager.h"
+#include "VideoRecorder.h"
 
 using namespace DirectX;
 
@@ -41,9 +42,9 @@ using namespace DirectX;
 #pragma comment (lib, "D3DX11.lib")
 #pragma comment (lib, "D3DX10.lib")
 
-#define BASE_COLOR D3DXCOLOR(0.0f, 0.0f, 0.0f, 1.0f)  // BACKGROUND COLOR
+#define SKYBOX_COLOR D3DXCOLOR(0.702f, 0.967f, 0.988f, 1.0f)  // BACKGROUND COLOR
 
-#define WINDOW_WIDTH 1200
+#define WINDOW_WIDTH 1800
 #define WINDOW_HEIGHT 750
 
 constexpr int HIERARCHY_WIDTH = 280;
@@ -71,12 +72,14 @@ EntityManager entityManager;
 std::unique_ptr<MeshManager> meshManager;
 std::unique_ptr<MaterialManager> materialManager;
 std::unique_ptr<TextureManager> textureManager;
+std::unique_ptr<VideoRecorder> videoRecorder;
 
 // direct x pipeline (Interface Direct-X Global Interface Swap Chain)
 IDXGISwapChain* swapchain;
 ID3D11Device* dev;
 ID3D11DeviceContext* devcon;
 ID3D11RenderTargetView* backBuffer;
+ID3D11Texture2D* backBufferTexture = nullptr;
 HWND hWnd;  // handler for window
 
 HWND viewportWnd = nullptr;
@@ -380,19 +383,20 @@ bool InitD3D(HWND Hwnd)
     if (!CheckHR(hr, "Failed to create D3D11 device and swapchain"))
         return false;
 
+    // initialize video recorder
+    videoRecorder = std::make_unique<VideoRecorder>(dev, devcon);
+
     // initialize resource managers
     meshManager = std::make_unique<MeshManager>(dev);
 	materialManager = std::make_unique<MaterialManager>();  // no dev yet (CPU-sided for now)
     textureManager = std::make_unique<TextureManager>(dev);
 
     // BACK BUFFER
-    ID3D11Texture2D* pBackBuffer;
-    hr = swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);  // convert pBackBuffer into void** (long pointer void)
+    hr = swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBufferTexture));
     if (!CheckHR(hr, "Failed to get swapchain back buffer"))
         return false;
 
-    hr = dev->CreateRenderTargetView(pBackBuffer, NULL, &backBuffer);  // pDesc is for defining ZBuffer, Stencil, ...
-    pBackBuffer->Release();  // kill buffer afterwards
+    hr = dev->CreateRenderTargetView(backBufferTexture, nullptr, &backBuffer);
     if (!CheckHR(hr, "Failed to create render target view"))
         return false;
 
@@ -451,13 +455,17 @@ bool InitD3D(HWND Hwnd)
 
     CreateInstanceBuffer(1024);
 
+    // Start Videorecording
+    if (!videoRecorder->Start("output.mp4", renderWidth, renderHeight, 60))
+        MessageBoxA(nullptr, "Could not start video recorder.", "Video Recorder", MB_OK | MB_ICONERROR);
+
     return true;
 }
 
 void Render(void)
 {
     // do not draw on old frame:
-    devcon->ClearRenderTargetView(backBuffer, BASE_COLOR);
+    devcon->ClearRenderTargetView(backBuffer, SKYBOX_COLOR);
     devcon->ClearDepthStencilView(depthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 	// clear render batches (of instances)
     for (RenderBatch& batch : renderBatches)
@@ -691,6 +699,13 @@ void Render(void)
         );
     }
 
+    if (videoRecorder != nullptr && videoRecorder->IsRecording())
+    {
+        videoRecorder->CaptureFrame(
+            backBufferTexture
+        );
+    }
+
     // Show finished frame
     swapchain->Present(0,0);
 }
@@ -796,6 +811,62 @@ void FlockingAlgorithm()
     );
 }
 
+void UpdateFlockingAngularVelocity(Transform& transform, Physics& physics, const Flocking& flocking)
+{
+    XMVECTOR velocity = XMLoadFloat3(&physics.linearVelocity);
+
+    // Flocking only moves on XZ plane
+    velocity = XMVectorSetY(velocity, 0.0f);
+
+    float speedSq = XMVectorGetX(XMVector3LengthSq(velocity));
+
+    // No meaningful movement direction
+    if (speedSq < 0.0001f)
+    {
+        physics.angularVelocity = { 0.0f, 0.0f, 0.0f };
+        return;
+    }
+
+    XMVECTOR desiredForward = XMVector3Normalize(velocity);
+
+    XMVECTOR rotation = XMLoadFloat4(&transform.rotation);
+
+    XMVECTOR localForward = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
+
+    // Assumes +Z is the entity's local forward axis.
+    XMVECTOR currentForward = XMVector3Rotate(localForward, rotation );
+
+    currentForward = XMVectorSetY(currentForward, 0.0f);  // no vertical component
+
+    float forwardLengthSq = XMVectorGetX(XMVector3LengthSq(currentForward));
+
+    if (forwardLengthSq < 0.0001f)
+        return;
+
+    currentForward = XMVector3Normalize(currentForward);
+
+    // Signed angle around Y-axis
+    float dot = XMVectorGetX( XMVector3Dot( currentForward, desiredForward ) );
+    dot = std::clamp(dot, -1.0f, 1.0f);
+
+    XMVECTOR cross = XMVector3Cross( currentForward, desiredForward );
+    float crossY = XMVectorGetY(cross);
+
+    // atan2 gives us both angle AND turning direction
+    float angle = std::atan2(crossY, dot);
+
+    // Convert angular error into desired angular velocity
+    float angularSpeed = angle * flocking.turnResponse;
+
+    angularSpeed = std::clamp(
+        angularSpeed,
+        -flocking.turnSpeed,
+        flocking.turnSpeed
+    );
+
+    physics.angularVelocity = { 0.0f, angularSpeed, 0.0f };
+}
+
 void FixedUpdate(float fixedDeltaTime) {
     // Physics goes here
     // Example:
@@ -819,6 +890,11 @@ void FixedUpdate(float fixedDeltaTime) {
             velocity += XMLoadFloat3(&physics.linearAcceleration) * fixedDeltaTime;
             XMStoreFloat3(&physics.linearVelocity, velocity);
 
+            if (Flocking* flocking = entityManager.GetComponent<Flocking>(entity))
+            {
+                UpdateFlockingAngularVelocity(transform, physics, *flocking);
+            }
+
             // is velocity.length > 0 (are we moving?)
             float speedSq = XMVectorGetX(XMVector3LengthSq(velocity));  // squared length to avoid sqrt()
             if (speedSq > epsilon * epsilon)
@@ -836,7 +912,7 @@ void FixedUpdate(float fixedDeltaTime) {
             XMVECTOR angVelocity = XMLoadFloat3(&physics.angularVelocity);
             float angSpeed = XMVectorGetX(XMVector3Length(angVelocity));
 
-            if (angSpeed > epsilon * epsilon)
+            if (angSpeed > epsilon)
             {
                 // Angular velocity direction = rotation axis
                 XMVECTOR axis = angVelocity / angSpeed;  // basically: normalize()
@@ -1330,6 +1406,30 @@ void SpawnObject(MeshHandle mesh, MaterialHandle material, const Transform& tran
     entityManager.AddComponent(entity, VirtualRoom2D{});  // for setting boundaries
 }
 
+void AddGround(MaterialHandle material)
+{
+    MeshHandle mesh = meshManager->CreatePlane(150.0f, 150.0f);
+
+    EntityId entity = entityManager.AddEntity("Ground Plane");
+
+    Transform transform;
+    transform.position = { 0.0f, -3.8f, 0.0f };
+    transform.scale = { 1.0f, 1.0f, 1.0f };
+    entityManager.AddComponent(entity, transform);
+
+    if (material == INVALID_MATERIAL)
+        material = materialManager->GetDefaultMaterial();
+
+    entityManager.AddComponent(
+        entity,
+        MeshRenderer{
+            mesh,
+            material,
+            true
+        }
+    );
+}
+
 void AddCamera(void)
 {
     EntityId cameraEntity = entityManager.AddEntity((MainCameraInitialized ? "Camera" : "Main Camera"));
@@ -1351,6 +1451,38 @@ void AddCamera(void)
     }
 }
 
+void AddLights(void)
+{
+    // add a global light source (like the sun)
+    EntityId dirLight = entityManager.AddEntity("Light");
+
+    // directional light
+    Light directionalLight;
+    directionalLight.intensity = 0.9f;
+
+    Transform lightTransform;
+
+    XMStoreFloat4(
+        &lightTransform.rotation,
+        EulerDegreesToQuaternion({ -45.0f, 45.0f, 0.0f })
+    );
+    entityManager.AddComponent(dirLight, lightTransform);
+    entityManager.AddComponent(dirLight, directionalLight);
+
+    /*
+    // point light
+    EntityId lightEntity2 = entityManager.AddEntity("Light Point");
+    entityManager.AddComponent(lightEntity2, lightTransform);
+
+    Light pointLight;
+    pointLight.type = LightType::Point;
+    pointLight.color = { 1, 0, 0 };
+    pointLight.range = 25.0f;
+    pointLight.intensity = 105.0f;
+    entityManager.AddComponent(lightEntity2, pointLight);
+	*/
+}
+
 std::map<std::string, MaterialHandle> CreateMaterials()
 {
     std::map<std::string, MaterialHandle> output;
@@ -1359,47 +1491,44 @@ std::map<std::string, MaterialHandle> CreateMaterials()
     TextureHandle teddyNormalTexture = textureManager->LoadTexture("Assets/teddy_normal.png");
     TextureHandle teddyHeightTexture = textureManager->LoadTexture("Assets/teddy_height.png");
 
-    Material redMaterial;
-    redMaterial.baseColor = { 1.0f, 0.1f, 0.1f, 1.0f };
-    redMaterial.albedoTexture = teddyTexture;
-    redMaterial.normalTexture = teddyNormalTexture;
-    redMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("red", materialManager->CreateMaterial(redMaterial));
+    Material normalMaterial;  // baseColor = white
+    normalMaterial.albedoTexture = teddyTexture;
+    normalMaterial.normalTexture = teddyNormalTexture;
+    normalMaterial.heightTexture = teddyHeightTexture;
+    output.try_emplace("teddy0", materialManager->CreateMaterial(normalMaterial));
 
-    Material blueMaterial;
-    blueMaterial.baseColor = { 0.1f, 0.2f, 1.0f, 1.0f };
-    blueMaterial.albedoTexture = teddyTexture;
-    blueMaterial.normalTexture = teddyNormalTexture;
-    blueMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("blue", materialManager->CreateMaterial(blueMaterial));
+    Material brownMaterial;
+    brownMaterial.baseColor = { 0.8f, 0.7f, 0.6f, 1.0f };
+    brownMaterial.albedoTexture = teddyTexture;
+    brownMaterial.normalTexture = teddyNormalTexture;
+    brownMaterial.heightTexture = teddyHeightTexture;
+    output.try_emplace("teddy1", materialManager->CreateMaterial(brownMaterial));
 
-    Material greenMaterial;
-    greenMaterial.baseColor = { 0.1f, 1.0f, 0.1f, 1.0f };
-    greenMaterial.albedoTexture = teddyTexture;
-    greenMaterial.normalTexture = teddyNormalTexture;
-    greenMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("green", materialManager->CreateMaterial(greenMaterial));
+    Material brownerMaterial;
+    brownerMaterial.baseColor = { 0.8f, 0.5f, 0.3f, 1.0f };
+    brownerMaterial.albedoTexture = teddyTexture;
+    brownerMaterial.normalTexture = teddyNormalTexture;
+    brownerMaterial.heightTexture = teddyHeightTexture;
+    output.try_emplace("teddy2", materialManager->CreateMaterial(brownerMaterial));
 
-    Material yellowMaterial;
-    yellowMaterial.baseColor = { 0.1f, 0.9f, 1.0f, 1.0f };
-    yellowMaterial.albedoTexture = teddyTexture;
-    yellowMaterial.normalTexture = teddyNormalTexture;
-    yellowMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("yellow", materialManager->CreateMaterial(yellowMaterial));
+    Material brownestMaterial;
+    brownestMaterial.baseColor = { 0.7f, 0.7f, 0.1f, 1.0f };
+    brownestMaterial.albedoTexture = teddyTexture;
+    brownestMaterial.normalTexture = teddyNormalTexture;
+    brownestMaterial.heightTexture = teddyHeightTexture;
+    output.try_emplace("teddy3", materialManager->CreateMaterial(brownestMaterial));
 
-    Material orangeMaterial;
-    orangeMaterial.baseColor = { 0.7f, 1.0f, 0.1f, 1.0f };
-    orangeMaterial.albedoTexture = teddyTexture;
-    orangeMaterial.normalTexture = teddyNormalTexture;
-    orangeMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("orange", materialManager->CreateMaterial(orangeMaterial));
+    TextureHandle groundTexture = textureManager->LoadTexture("Assets/arcade_carpet_albedo4.png");
+    TextureHandle groundNormalTexture = textureManager->LoadTexture("Assets/arcade_carpet_normal.png");
 
-    Material purpleMaterial;
-    purpleMaterial.baseColor = { 0.95f, 0.1f, 0.85f, 1.0f };
-    purpleMaterial.albedoTexture = teddyTexture;
-    purpleMaterial.normalTexture = teddyNormalTexture;
-    purpleMaterial.heightTexture = teddyHeightTexture;
-    output.try_emplace("purple", materialManager->CreateMaterial(purpleMaterial));
+    TextureHandle groundHeightTexture = textureManager->LoadTexture("Assets/arcade_carpet_height.png");
+
+    Material carpetMaterial;  // baseColor = white
+    carpetMaterial.albedoTexture = groundTexture;
+    carpetMaterial.normalTexture = groundNormalTexture;
+    carpetMaterial.heightTexture = groundHeightTexture;
+    carpetMaterial.tiling = { 10.0f, 10.0f };
+    output.try_emplace("carpet", materialManager->CreateMaterial(carpetMaterial));
 
     return output;
 }
@@ -1408,50 +1537,32 @@ bool InitGraphics()
 {
     AddCamera();  // add main camera
 
-    // add a global light source (like the sun)
-    EntityId lightEntity = entityManager.AddEntity("Light");
-    EntityId lightEntity2 = entityManager.AddEntity("Light Point");
-
-    Transform lightTransform;
-    lightTransform.position = { 0.0f, 0.0f, 0.0f };
-    XMStoreFloat4(
-        &lightTransform.rotation,
-        EulerDegreesToQuaternion({ -30.0f, 45.0f, 0.0f })
-    );
-    entityManager.AddComponent(lightEntity, lightTransform);
-    entityManager.AddComponent(lightEntity2, lightTransform);
-
-    // directional light
-    Light directionalLight;
-    directionalLight.intensity = 10.0f;
-    entityManager.AddComponent(lightEntity, directionalLight);
-
-    // point light
-    Light pointLight;
-    pointLight.type = LightType::Point;
-    pointLight.color = { 1, 0, 0 };
-    pointLight.range = 25.0f;
-    pointLight.intensity = 105.0f;
-    entityManager.AddComponent(lightEntity2, pointLight);
-
     // create some basic materials
     auto materials = CreateMaterials();
+
+    AddGround(materials["carpet"]);
+
+    AddLights();
 
     try
     {
         MeshHandle mesh = meshManager->LoadMesh("Assets/testmodel.fbx");
 
-        int n = 20;
+        float minCoord = -70.0f;
+        float maxCoord = 70.0f;
+
+        int n = 10;
         for (int i = 0; i < n; i++)
         {
             for (int k = 0; k < n; k++)
             {
-                int ran = RandomInt(0, 100);
-                if (ran < 60)
-                    continue;
-
                 Transform transform;
-                transform.position = {5.0f*i - n/2.0f, 0.0f, 5.0f*k - n/2.0f };
+                // x & y -> [-70; 70]
+                // i = 0, k = 0 -> (-70|-70)
+                // i = n, k = 0 -> ( 70|-70)
+                // i = 0, k = n -> (-70| 70)
+                // i = n, k = n -> ( 70| 70)
+                transform.position = { minCoord + 2.0f * maxCoord * (static_cast<float>(i) / static_cast<float>(n)), 0.0f, minCoord + 2.0f * maxCoord * (static_cast<float>(k) / static_cast<float>(n)) };
                 XMStoreFloat4(
                     &transform.rotation,
                     XMQuaternionRotationRollPitchYaw(
@@ -1465,21 +1576,12 @@ bool InitGraphics()
 
                 using Clock = std::chrono::steady_clock;
 
-                int random = RandomInt(0, 100);
+                // TODO: has to be updated when adding more teddy textures in CreateMaterials() !
+                int random = RandomInt(0, 3);
 
-                MaterialHandle material;
-                if (random < 16)
-                    material = materials["red"];
-                else if (random < 33)
-                    material = materials["blue"];
-                else if (random < 50)
-                    material = materials["green"];
-                else if (random < 66)
-                    material = materials["yellow"];
-                else if (random < 84)
-                    material = materials["purple"];
-                else
-                    material = materials["orange"];
+                // random material of 4 different brown tones
+                std::string matKey = "teddy" + std::to_string(random);
+                MaterialHandle material = materials[matKey];
 
                 SpawnObject(mesh, material, transform, "Teddy " + std::to_string(i) + std::to_string(k));
             }
@@ -1502,6 +1604,12 @@ bool InitGraphics()
 
 void CleanD3D(void)
 {
+    if (videoRecorder)
+    {
+        videoRecorder->Stop();
+        videoRecorder.reset();
+    }
+
     // Release() basically calls free() with internal logic
     if (swapchain)
         swapchain->SetFullscreenState(false, nullptr);
@@ -1578,6 +1686,12 @@ void CleanD3D(void)
     {
         backBuffer->Release();
         backBuffer = nullptr;
+    }
+
+    if (backBufferTexture)
+    {
+        backBufferTexture->Release();
+        backBufferTexture = nullptr;
     }
 
     // release all loaded meshes

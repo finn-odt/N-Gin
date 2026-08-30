@@ -72,4 +72,7 @@ public:
 	BoundingBox GetBoundingBoxForMesh(const std::vector<Vertex>& vertices);
 
     const Mesh& GetMesh(MeshHandle handle) const;
+
+	// Procedural meshes
+	MeshHandle CreatePlane(float width = 1.0f, float depth = 1.0f);
 };

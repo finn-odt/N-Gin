@@ -325,43 +325,54 @@ const Mesh& MeshManager::GetMesh(MeshHandle handle) const
 	return meshes[handle];  // return Mesh from meshes-vector
 }
 
+MeshHandle MeshManager::CreatePlane(float width, float depth)
+{
+	if (width <= 0.0f || depth <= 0.0f)
+		throw std::runtime_error("Plane dimensions must be greater than zero.");
 
-/*
+	const float halfWidth = width * 0.5f;
+	const float halfDepth = depth * 0.5f;
 
+	CpuMeshData data;
 
-// USAGE
-EntityId entity = entityManager.AddEntity();
+	// Plane lies on the XZ axis, facing +Y
+	data.vertices =
+	{
+		{
+			{-halfWidth, 0.0f, -halfDepth},
+			{0.0f, 1.0f, 0.0f},
+			{0.0f, 1.0f},
+			{1.0f, 0.0f, 0.0f, 1.0f}
+		},
 
-MeshHandle playerMesh = meshManager.LoadMeshFromObj("Assets/player.obj");
-//LoadMesh("Assets/cube.obj");
-//LoadMesh("Assets/character.fbx");
+		{
+			{-halfWidth, 0.0f, halfDepth},
+			{0.0f, 1.0f, 0.0f},
+			{0.0f, 0.0f},
+			{1.0f, 0.0f, 0.0f, 1.0f}
+		},
 
-entityManager.AddComponent(entity, Transform{});
-entityManager.AddComponent(entity, MeshRenderer{ playerMesh });
+		{
+			{halfWidth, 0.0f, halfDepth},
+			{0.0f, 1.0f, 0.0f},
+			{1.0f, 0.0f},
+			{1.0f, 0.0f, 0.0f, 1.0f}
+		},
 
+		{
+			{halfWidth, 0.0f, -halfDepth},
+			{0.0f, 1.0f, 0.0f},
+			{1.0f, 1.0f},
+			{1.0f, 0.0f, 0.0f, 1.0f}
+		}
+	};
 
+	// Two triangles
+	data.indices =
+	{
+		0, 1, 2,
+		0, 2, 3
+	};
 
-
-const Mesh& mesh = meshManager.GetMesh(renderer.mesh);
-
-UINT stride = mesh.stride;
-UINT offset = 0;
-
-deviceContext->IASetVertexBuffers(
-	0,
-	1,
-	mesh.vertexBuffer.GetAddressOf(),
-	&stride,
-	&offset
-);
-
-deviceContext->IASetIndexBuffer(
-	mesh.indexBuffer.Get(),
-	DXGI_FORMAT_R32_UINT,
-	0
-);
-
-deviceContext->DrawIndexed(mesh.indexCount, 0, 0);
-
-
-*/
+	return CreateMeshFromCpuData(data);
+}
