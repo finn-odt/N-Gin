@@ -270,7 +270,7 @@ float4 PS(VOut input) : SV_TARGET
     // PARALLAX MAPPING
     float2 uv = ApplyParallaxOffset( input.uv, viewDirTS, 0.03f );
 
-    float3 normalTS = normalMap.Sample(textureSampler, input.uv).xyz * 2.0f - 1.0f;
+    float3 normalTS = normalMap.Sample(textureSampler, uv).xyz * 2.0f - 1.0f;
     normalTS = normalize(normalTS);
     // Tangent Space -> World Space
     float3 normalWS = normalize( T * normalTS.x + B * normalTS.y + N * normalTS.z );
@@ -311,7 +311,7 @@ float4 PS(VOut input) : SV_TARGET
     }
 
     // sample texture and mix it with the material baseColor
-    float4 textureColor = albedoMap.Sample(textureSampler, input.uv) * baseColor;
+    float4 textureColor = albedoMap.Sample(textureSampler, uv) * baseColor;
     
     return float4(textureColor.rgb * lightColor, textureColor.a);
 }
