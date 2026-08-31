@@ -166,7 +166,7 @@ float3 CalculateLight(float3 normalWS, float3 viewDirWS, float3 lightDirWS, Ligh
         const float shininess = 32.0f;
         float specularAmount = pow( saturate(dot(reflected, viewDirWS)), shininess );
 
-        float3 specular = light.color * light.intensity * specularAmount;  // specular-color could be added
+        specular = light.color * light.intensity * specularAmount;  // specular-color could be added
     }
 
     return diffuse + specular;

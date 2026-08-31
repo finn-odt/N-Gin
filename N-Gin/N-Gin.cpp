@@ -1435,8 +1435,8 @@ void AddCamera(void)
     EntityId cameraEntity = entityManager.AddEntity((MainCameraInitialized ? "Camera" : "Main Camera"));
 
     Transform cameraTransform;
-    cameraTransform.position = { 30.0f, 100.0f, -20.0f };
-    XMStoreFloat4(&cameraTransform.rotation, EulerDegreesToQuaternion({ 55.0f, -10.0f, 0.0f }));
+    cameraTransform.position = { 80.0f, 20.0f, -90.0f };
+    XMStoreFloat4(&cameraTransform.rotation, EulerDegreesToQuaternion({ 28.7f, -37.5f, 0.0f }));
 
     entityManager.AddComponent(cameraEntity, cameraTransform);
 
